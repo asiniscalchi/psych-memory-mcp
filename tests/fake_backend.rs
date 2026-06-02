@@ -3,41 +3,57 @@
 //! These run with a plain `cargo test` — no memory-service required.
 
 use psych_memory_mcp::backend::{FakeMemoryBackend, MemoryBackend};
+use psych_memory_mcp::model::StoreMemoryRequest;
 use serde_json::json;
+
+fn request(content: &str, tags: Vec<String>, metadata: serde_json::Value) -> StoreMemoryRequest {
+    StoreMemoryRequest {
+        content: content.to_string(),
+        memory_type: "fact".into(),
+        tags,
+        metadata,
+    }
+}
 
 #[tokio::test]
 async fn stores_and_reads_back() {
     let backend = FakeMemoryBackend::new();
-    let hash = backend
-        .store_memory(
-            "FACT: x".into(),
-            "fact".into(),
+    let stored = backend
+        .store_memory(request(
+            "FACT: x",
             vec!["epistemic:fact".into()],
             json!({ "k": "v" }),
-        )
+        ))
         .await
         .unwrap();
 
-    let got = backend.get_memory(&hash).await.unwrap().expect("present");
+    let got = backend
+        .get_memory(&stored.backend_memory_id)
+        .await
+        .unwrap()
+        .expect("present");
     assert_eq!(got.content, "FACT: x");
     assert_eq!(got.memory_type, "fact");
     assert_eq!(got.tags, vec!["epistemic:fact".to_string()]);
     assert_eq!(got.metadata, json!({ "k": "v" }));
-    assert_eq!(got.content_hash, hash);
+    assert_eq!(got.content_hash, stored.backend_memory_id);
 }
 
 #[tokio::test]
 async fn storing_same_content_is_idempotent() {
     let backend = FakeMemoryBackend::new();
-    let h1 = backend
-        .store_memory("dup".into(), "fact".into(), vec![], json!({}))
+    let r1 = backend
+        .store_memory(request("dup", vec![], json!({})))
         .await
         .unwrap();
-    let h2 = backend
-        .store_memory("dup".into(), "fact".into(), vec![], json!({}))
+    let r2 = backend
+        .store_memory(request("dup", vec![], json!({})))
         .await
         .unwrap();
-    assert_eq!(h1, h2, "same content must hash to the same id");
+    assert_eq!(
+        r1.backend_memory_id, r2.backend_memory_id,
+        "same content must hash to the same id"
+    );
 }
 
 #[tokio::test]

@@ -7,23 +7,16 @@
 
 use async_trait::async_trait;
 use reqwest::{Client, StatusCode};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use super::{MemoryBackend, MemoryRecord};
 use crate::errors::PsychMemoryError;
+use crate::model::{BackendStoreResult, StoreMemoryRequest};
 
 #[derive(Debug, Clone)]
 pub struct ReqwestMemoryBackend {
     base_url: String,
     client: Client,
-}
-
-#[derive(Serialize)]
-struct StoreRequest {
-    content: String,
-    tags: Vec<String>,
-    memory_type: String,
-    metadata: serde_json::Value,
 }
 
 #[derive(Deserialize)]
@@ -75,22 +68,14 @@ impl From<reqwest::Error> for PsychMemoryError {
 impl MemoryBackend for ReqwestMemoryBackend {
     async fn store_memory(
         &self,
-        content: String,
-        memory_type: String,
-        tags: Vec<String>,
-        metadata: serde_json::Value,
-    ) -> Result<String, PsychMemoryError> {
-        let body = StoreRequest {
-            content,
-            tags,
-            memory_type,
-            metadata,
-        };
-
+        request: StoreMemoryRequest,
+    ) -> Result<BackendStoreResult, PsychMemoryError> {
+        // StoreMemoryRequest serialises to exactly the REST body the service
+        // expects (content / memory_type / tags / metadata).
         let resp = self
             .client
             .post(self.url("/api/memories"))
-            .json(&body)
+            .json(&request)
             .send()
             .await?;
 
@@ -106,9 +91,10 @@ impl MemoryBackend for ReqwestMemoryBackend {
         if !parsed.success {
             return Err(PsychMemoryError::BackendStatus(parsed.message));
         }
-        parsed
-            .content_hash
-            .ok_or_else(|| PsychMemoryError::BackendStatus("response missing content_hash".into()))
+        let backend_memory_id = parsed.content_hash.ok_or_else(|| {
+            PsychMemoryError::BackendStatus("response missing content_hash".into())
+        })?;
+        Ok(BackendStoreResult { backend_memory_id })
     }
 
     async fn get_memory(
