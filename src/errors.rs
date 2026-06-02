@@ -81,6 +81,34 @@ pub enum ValidationError {
     AmbiguousPatternSeed,
     #[error("Memories tagged with this pattern_id are not valid pattern seeds.")]
     InvalidPatternSeedMatch,
+
+    // --- Interpretation resolution (Story 4) ---
+    #[error("interpretation_ids must not contain empty values.")]
+    EmptyInterpretationId,
+    #[error("One or more interpretation_ids could not be resolved.")]
+    UnknownInterpretation,
+    #[error("More than one Interpretation matched the same interpretation_id.")]
+    AmbiguousInterpretation,
+    #[error("Resolved interpretation_id did not match a valid Interpretation.")]
+    InvalidInterpretation,
+    #[error("Resolved interpretation metadata.interpretation_id does not match the requested interpretation_id.")]
+    InterpretationIdMismatch,
+
+    // --- Pattern occurrence (Story 4) ---
+    #[error("Pattern occurrence requires a pattern_id.")]
+    MissingPatternId,
+    #[error("pattern_id could not be resolved to an existing PatternSeed.")]
+    UnknownPatternSeed,
+    #[error("occurrence_date must be YYYY-MM-DD.")]
+    InvalidOccurrenceDate,
+    #[error("Pattern occurrence requires a summary.")]
+    EmptyOccurrenceSummary,
+    #[error("Pattern occurrence must describe an episode, not claim that the user has or is the pattern.")]
+    OccurrenceIdentityClaim,
+    #[error("intensity must be finite and between 0.0 and 1.0 when provided.")]
+    InvalidIntensity,
+    #[error("phase = not_activated requires intensity to be omitted or 0.0.")]
+    InvalidNotActivatedIntensity,
 }
 
 impl ValidationError {
@@ -120,6 +148,18 @@ impl ValidationError {
             ValidationError::AliasEqualsSlug => "alias_equals_slug",
             ValidationError::AmbiguousPatternSeed => "ambiguous_pattern_seed",
             ValidationError::InvalidPatternSeedMatch => "invalid_pattern_seed_match",
+            ValidationError::EmptyInterpretationId => "empty_interpretation_id",
+            ValidationError::UnknownInterpretation => "unknown_interpretation",
+            ValidationError::AmbiguousInterpretation => "ambiguous_interpretation",
+            ValidationError::InvalidInterpretation => "invalid_interpretation",
+            ValidationError::InterpretationIdMismatch => "interpretation_id_mismatch",
+            ValidationError::MissingPatternId => "missing_pattern_id",
+            ValidationError::UnknownPatternSeed => "unknown_pattern_seed",
+            ValidationError::InvalidOccurrenceDate => "invalid_occurrence_date",
+            ValidationError::EmptyOccurrenceSummary => "empty_occurrence_summary",
+            ValidationError::OccurrenceIdentityClaim => "occurrence_identity_claim",
+            ValidationError::InvalidIntensity => "invalid_intensity",
+            ValidationError::InvalidNotActivatedIntensity => "invalid_not_activated_intensity",
         }
     }
 }

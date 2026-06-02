@@ -19,13 +19,17 @@ use crate::model::interpretation::{
     SCHEMA_VERSION as INTERP_SCHEMA_VERSION,
 };
 use crate::model::journal_fact::{EPISTEMIC_STATUS, MEMORY_TYPE, SCHEMA_VERSION};
+use crate::model::pattern_occurrence::{
+    EPISTEMIC_STATUS as OCC_EPISTEMIC_STATUS, MEMORY_TYPE as OCC_MEMORY_TYPE,
+    SCHEMA_VERSION as OCC_SCHEMA_VERSION,
+};
 use crate::model::pattern_seed::{
     EPISTEMIC_STATUS as PATTERN_EPISTEMIC_STATUS, MEMORY_TYPE as PATTERN_MEMORY_TYPE,
     SCHEMA_VERSION as PATTERN_SCHEMA_VERSION, STATUS as PATTERN_STATUS,
 };
 use crate::model::{
     InterpretationStatus, StoreMemoryRequest, ValidatedInterpretation, ValidatedJournalFact,
-    ValidatedPatternSeed,
+    ValidatedPatternOccurrence, ValidatedPatternSeed,
 };
 
 /// Build the backend store request for a validated fact and its `fact_id`.
@@ -148,6 +152,55 @@ pub fn map_create_pattern_seed_to_backend_request(
     StoreMemoryRequest {
         content: format!("{} — {}", seed.name, seed.description),
         memory_type: PATTERN_MEMORY_TYPE.to_string(),
+        tags,
+        metadata,
+    }
+}
+
+/// Build the backend store request for a validated pattern occurrence.
+///
+/// Content is the episode summary (no `OCCURRENCE:` prefix, no identity/global
+/// activation claim). The record carries no occurrence_count/trend/activation
+/// fields — a single occurrence does not activate the pattern.
+pub fn map_record_pattern_occurrence_to_backend_request(
+    occurrence: &ValidatedPatternOccurrence,
+    occurrence_id: &str,
+) -> StoreMemoryRequest {
+    let phase = occurrence.phase.as_str();
+
+    let mut tags = vec![
+        "epistemic:pattern_occurrence".to_string(),
+        format!("epistemic_status:{OCC_EPISTEMIC_STATUS}"),
+        format!("occurrence_id:{occurrence_id}"),
+        format!("pattern_id:{}", occurrence.pattern_id),
+        format!("phase:{phase}"),
+    ];
+    for fact_id in &occurrence.fact_ids {
+        tags.push(format!("supported_by:{fact_id}"));
+    }
+    for interpretation_id in &occurrence.interpretation_ids {
+        tags.push(format!("linked_interpretation:{interpretation_id}"));
+    }
+
+    let mut metadata = json!({
+        "occurrence_id": occurrence_id,
+        "pattern_id": occurrence.pattern_id,
+        "fact_ids": occurrence.fact_ids,
+        "interpretation_ids": occurrence.interpretation_ids,
+        "occurrence_date": occurrence.occurrence_date,
+        "phase": phase,
+        "summary": occurrence.summary,
+        "confidence": occurrence.confidence,
+        "epistemic_status": OCC_EPISTEMIC_STATUS,
+        "schema_version": OCC_SCHEMA_VERSION,
+    });
+    if let Some(intensity) = occurrence.intensity {
+        metadata["intensity"] = json!(intensity);
+    }
+
+    StoreMemoryRequest {
+        content: occurrence.summary.clone(),
+        memory_type: OCC_MEMORY_TYPE.to_string(),
         tags,
         metadata,
     }
@@ -401,6 +454,110 @@ mod pattern_seed_tests {
             "active_since",
             "last_seen",
         ] {
+            assert!(
+                req.metadata.get(forbidden).is_none(),
+                "metadata has {forbidden}"
+            );
+        }
+        for forbidden_tag in ["status:active", "active:true"] {
+            assert!(!req.tags.iter().any(|t| t == forbidden_tag));
+        }
+        assert!(!req.tags.iter().any(|t| t.starts_with("trend:")));
+    }
+}
+
+#[cfg(test)]
+mod occurrence_tests {
+    use super::*;
+    use crate::model::OccurrencePhase;
+
+    fn occ() -> ValidatedPatternOccurrence {
+        ValidatedPatternOccurrence {
+            pattern_id: "pattern_savior".into(),
+            fact_ids: vec!["fact_a".into(), "fact_b".into()],
+            interpretation_ids: vec!["interp_a".into()],
+            occurrence_date: "2026-06-01".into(),
+            phase: OccurrencePhase::RecognizedBeforeAction,
+            summary: "The rescue impulse appeared but was noticed before being acted out.".into(),
+            confidence: 0.55,
+            intensity: Some(0.45),
+        }
+    }
+
+    fn mapped() -> StoreMemoryRequest {
+        map_record_pattern_occurrence_to_backend_request(&occ(), "occ_dead")
+    }
+
+    #[test]
+    fn maps_summary_to_content_and_memory_type() {
+        let req = mapped();
+        assert_eq!(
+            req.content,
+            "The rescue impulse appeared but was noticed before being acted out."
+        );
+        assert_eq!(req.memory_type, "pattern_occurrence");
+        assert!(!req.content.starts_with("OCCURRENCE:"));
+    }
+
+    #[test]
+    fn maps_expected_tags() {
+        let req = mapped();
+        for tag in [
+            "epistemic:pattern_occurrence",
+            "epistemic_status:evidence_linked_occurrence",
+            "occurrence_id:occ_dead",
+            "pattern_id:pattern_savior",
+            "phase:recognized_before_action",
+        ] {
+            assert!(req.tags.iter().any(|t| t == tag), "missing tag {tag}");
+        }
+    }
+
+    #[test]
+    fn maps_supported_by_and_linked_interpretation_tags() {
+        let req = mapped();
+        assert!(req.tags.iter().any(|t| t == "supported_by:fact_a"));
+        assert!(req.tags.iter().any(|t| t == "supported_by:fact_b"));
+        assert!(req
+            .tags
+            .iter()
+            .any(|t| t == "linked_interpretation:interp_a"));
+    }
+
+    #[test]
+    fn maps_metadata_and_schema_version() {
+        let req = mapped();
+        assert_eq!(req.metadata["occurrence_id"], "occ_dead");
+        assert_eq!(req.metadata["pattern_id"], "pattern_savior");
+        assert_eq!(
+            req.metadata["fact_ids"],
+            serde_json::json!(["fact_a", "fact_b"])
+        );
+        assert_eq!(
+            req.metadata["interpretation_ids"],
+            serde_json::json!(["interp_a"])
+        );
+        assert_eq!(req.metadata["occurrence_date"], "2026-06-01");
+        assert_eq!(req.metadata["phase"], "recognized_before_action");
+        assert!((req.metadata["intensity"].as_f64().unwrap() - 0.45).abs() < 1e-6);
+        assert_eq!(
+            req.metadata["schema_version"],
+            "psych-memory.pattern_occurrence.v1"
+        );
+    }
+
+    #[test]
+    fn omits_intensity_when_absent() {
+        let mut o = occ();
+        o.intensity = None;
+        let req = map_record_pattern_occurrence_to_backend_request(&o, "occ_x");
+        assert!(req.metadata.get("intensity").is_none());
+    }
+
+    #[test]
+    fn does_not_map_activation_or_trend_fields() {
+        let req = mapped();
+        for forbidden in ["occurrence_count", "trend", "active_since", "last_seen"] {
             assert!(
                 req.metadata.get(forbidden).is_none(),
                 "metadata has {forbidden}"

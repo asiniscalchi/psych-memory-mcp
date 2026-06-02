@@ -1,157 +1,185 @@
-//! Evidence resolution: verifying that an interpretation's supporting
-//! `fact_id`s actually resolve to existing journal facts.
+//! Evidence resolution: verifying that ids referenced by an epistemic record
+//! actually resolve to existing, valid records of the right type.
 //!
-//! This is the domain layer's job, not the backend's. The backend only knows
-//! how to look up memories by tag; the epistemic rules — is it really a fact?
-//! is it unambiguous? does its metadata match? — live here.
+//! This is the domain layer's job, not the backend's. The backend only looks
+//! up memories by tag; the epistemic rules — is it really a fact / pattern seed
+//! / interpretation? is it unambiguous? does its metadata match? — live here.
+//! All three entity types share the [`crate::resolution`] semantics, so a
+//! single valid record stays usable even amid corrupt/tag-colliding records.
 
 use crate::backend::{MemoryBackend, MemoryRecord};
 use crate::errors::{PsychMemoryError, ValidationError};
+use crate::model::interpretation::SCHEMA_VERSION as INTERP_SCHEMA_VERSION;
 use crate::model::journal_fact::SCHEMA_VERSION as FACT_SCHEMA_VERSION;
 use crate::model::pattern_seed::SCHEMA_VERSION as PATTERN_SCHEMA_VERSION;
+use crate::resolution::{resolve_one_by_tag, TypedLookup};
 
 fn has_tag(memory: &MemoryRecord, tag: &str) -> bool {
     memory.tags.iter().any(|t| t == tag)
 }
 
-/// Validate that a single tag-matched memory is genuinely the journal fact for
-/// `fact_id`. The `metadata.fact_id` exact-equality check is the final guard,
-/// since tag matching may have adapter-specific (loose/prefix) semantics.
-fn validate_resolved_fact(memory: &MemoryRecord, fact_id: &str) -> Result<(), ValidationError> {
-    let fact_id_tag = format!("fact_id:{fact_id}");
-    let structurally_a_fact = memory.memory_type == "fact"
+fn metadata_str<'a>(memory: &'a MemoryRecord, key: &str) -> Option<&'a str> {
+    memory.metadata.get(key).and_then(|v| v.as_str())
+}
+
+// --- Journal fact ---
+
+/// A record that is structurally a journal fact (type, tags, schema) — but
+/// whose `metadata.fact_id` is *not* yet checked against the requested id.
+fn is_structural_fact(memory: &MemoryRecord, fact_id: &str) -> bool {
+    memory.memory_type == "fact"
         && has_tag(memory, "epistemic:fact")
         && has_tag(memory, "source:froid")
-        && has_tag(memory, &fact_id_tag);
-    if !structurally_a_fact {
-        return Err(ValidationError::InvalidSupportingFact);
-    }
-
-    match memory.metadata.get("fact_id").and_then(|v| v.as_str()) {
-        Some(id) if id == fact_id => {}
-        _ => return Err(ValidationError::SupportingFactIdMismatch),
-    }
-
-    let schema_ok = memory
-        .metadata
-        .get("schema_version")
-        .and_then(|v| v.as_str())
-        == Some(FACT_SCHEMA_VERSION);
-    if !schema_ok {
-        return Err(ValidationError::InvalidSupportingFact);
-    }
-
-    Ok(())
+        && has_tag(memory, &format!("fact_id:{fact_id}"))
+        && metadata_str(memory, "schema_version") == Some(FACT_SCHEMA_VERSION)
 }
 
-/// Resolve every supporting `fact_id` to exactly one existing journal fact.
-///
-/// Each id must match exactly one memory via the `fact_id:<id>` tag; zero is
-/// `unknown_supporting_fact`, more than one is `ambiguous_supporting_fact`, and
-/// the single match must pass [`validate_resolved_fact`].
-pub async fn resolve_supporting_facts(
-    backend: &dyn MemoryBackend,
-    supported_by_fact_ids: &[String],
-) -> Result<Vec<MemoryRecord>, PsychMemoryError> {
-    let mut resolved = Vec::with_capacity(supported_by_fact_ids.len());
+fn is_valid_journal_fact(memory: &MemoryRecord, fact_id: &str) -> bool {
+    is_structural_fact(memory, fact_id) && metadata_str(memory, "fact_id") == Some(fact_id)
+}
 
-    for fact_id in supported_by_fact_ids {
-        let tag = format!("fact_id:{fact_id}");
-        let mut matches = backend.find_memories_by_tag(&tag).await?;
-
-        let memory = match matches.len() {
-            0 => return Err(ValidationError::UnknownSupportingFact.into()),
-            1 => matches.remove(0),
-            _ => return Err(ValidationError::AmbiguousSupportingFact.into()),
-        };
-
-        validate_resolved_fact(&memory, fact_id)?;
-        resolved.push(memory);
+/// Classify why none of the tag-matched records were valid facts: a
+/// structurally-correct record means only `metadata.fact_id` is off.
+fn fact_invalid_error(records: &[MemoryRecord], fact_id: &str) -> ValidationError {
+    if records.iter().any(|m| is_structural_fact(m, fact_id)) {
+        ValidationError::SupportingFactIdMismatch
+    } else {
+        ValidationError::InvalidSupportingFact
     }
-
-    Ok(resolved)
 }
 
-/// Outcome of looking up an existing pattern seed by `pattern_id`.
-#[derive(Debug)]
-pub enum PatternSeedLookup {
-    /// No memory carries this `pattern_id` tag.
-    NotFound,
-    /// Exactly one valid pattern seed exists.
-    Found(MemoryRecord),
-    /// More than one valid pattern seed exists for this id.
-    Ambiguous(Vec<MemoryRecord>),
-    /// Memories carry the tag but none are valid pattern seeds.
-    InvalidMatch(Vec<MemoryRecord>),
-}
+// --- Pattern seed ---
 
-/// True if `memory` is structurally a valid pattern seed for `pattern_id`,
-/// including the mandatory `metadata.pattern_id` exact-equality guard.
 fn is_valid_pattern_seed(memory: &MemoryRecord, pattern_id: &str) -> bool {
-    let pattern_id_tag = format!("pattern_id:{pattern_id}");
-    let structural = memory.memory_type == "pattern_seed"
+    memory.memory_type == "pattern_seed"
         && has_tag(memory, "epistemic:pattern_seed")
         && has_tag(memory, "status:seed")
-        && has_tag(memory, &pattern_id_tag);
-    let metadata_id_ok =
-        memory.metadata.get("pattern_id").and_then(|v| v.as_str()) == Some(pattern_id);
-    let schema_ok = memory
-        .metadata
-        .get("schema_version")
-        .and_then(|v| v.as_str())
-        == Some(PATTERN_SCHEMA_VERSION);
-    structural && metadata_id_ok && schema_ok
+        && has_tag(memory, &format!("pattern_id:{pattern_id}"))
+        && metadata_str(memory, "pattern_id") == Some(pattern_id)
+        && metadata_str(memory, "schema_version") == Some(PATTERN_SCHEMA_VERSION)
 }
 
-/// Resolve an existing pattern seed by its `pattern_id` (idempotency check).
-///
-/// Mixed valid + invalid matches resolve to `Found` (a single valid seed stays
-/// usable even if unrelated corrupt/colliding records exist); only when there
-/// are matches but *none* are valid do we report `InvalidMatch`.
+/// Resolve a pattern seed by its `pattern_id` tag.
 pub async fn resolve_pattern_seed_by_pattern_id(
     backend: &dyn MemoryBackend,
     pattern_id: &str,
-) -> Result<PatternSeedLookup, PsychMemoryError> {
+) -> Result<TypedLookup, PsychMemoryError> {
     let tag = format!("pattern_id:{pattern_id}");
-    let matches = backend.find_memories_by_tag(&tag).await?;
-    if matches.is_empty() {
-        return Ok(PatternSeedLookup::NotFound);
+    resolve_one_by_tag(backend, &tag, |m| is_valid_pattern_seed(m, pattern_id)).await
+}
+
+// --- Interpretation ---
+
+fn is_structural_interpretation(memory: &MemoryRecord, interpretation_id: &str) -> bool {
+    memory.memory_type == "interpretation"
+        && has_tag(memory, "epistemic:interpretation")
+        && has_tag(memory, "epistemic_status:hypothesis")
+        && has_tag(memory, &format!("interpretation_id:{interpretation_id}"))
+        && metadata_str(memory, "schema_version") == Some(INTERP_SCHEMA_VERSION)
+}
+
+fn is_valid_interpretation(memory: &MemoryRecord, interpretation_id: &str) -> bool {
+    is_structural_interpretation(memory, interpretation_id)
+        && metadata_str(memory, "interpretation_id") == Some(interpretation_id)
+}
+
+fn interpretation_invalid_error(
+    records: &[MemoryRecord],
+    interpretation_id: &str,
+) -> ValidationError {
+    if records
+        .iter()
+        .any(|m| is_structural_interpretation(m, interpretation_id))
+    {
+        ValidationError::InterpretationIdMismatch
+    } else {
+        ValidationError::InvalidInterpretation
     }
+}
 
-    let (mut valid, invalid): (Vec<MemoryRecord>, Vec<MemoryRecord>) = matches
-        .into_iter()
-        .partition(|m| is_valid_pattern_seed(m, pattern_id));
-
-    Ok(match valid.len() {
-        0 => PatternSeedLookup::InvalidMatch(invalid),
-        1 => PatternSeedLookup::Found(valid.remove(0)),
-        _ => PatternSeedLookup::Ambiguous(valid),
+/// Resolve an interpretation by its `interpretation_id` tag.
+pub async fn resolve_interpretation_by_interpretation_id(
+    backend: &dyn MemoryBackend,
+    interpretation_id: &str,
+) -> Result<TypedLookup, PsychMemoryError> {
+    let tag = format!("interpretation_id:{interpretation_id}");
+    resolve_one_by_tag(backend, &tag, |m| {
+        is_valid_interpretation(m, interpretation_id)
     })
+    .await
+}
+
+// --- List resolvers used by the epistemic tools ---
+
+/// Resolve every supporting `fact_id` to exactly one existing journal fact.
+/// Domain-validation failures (unknown/ambiguous/invalid/mismatch) come back as
+/// `Err(ValidationError)`; only transport failures are other errors.
+///
+/// Story 4 note: this now uses the shared filter-then-count resolver, which
+/// **intentionally changes** the earlier fact-lookup corner case — one valid
+/// fact plus an unrelated corrupt/colliding tag match used to be
+/// `ambiguous_supporting_fact`, and is now `Found(valid)`, for consistency with
+/// pattern-seed and interpretation resolution.
+pub async fn resolve_supporting_facts(
+    backend: &dyn MemoryBackend,
+    fact_ids: &[String],
+) -> Result<Vec<MemoryRecord>, PsychMemoryError> {
+    let mut resolved = Vec::with_capacity(fact_ids.len());
+    for fact_id in fact_ids {
+        let tag = format!("fact_id:{fact_id}");
+        match resolve_one_by_tag(backend, &tag, |m| is_valid_journal_fact(m, fact_id)).await? {
+            TypedLookup::Found(memory) => resolved.push(memory),
+            TypedLookup::NotFound => return Err(ValidationError::UnknownSupportingFact.into()),
+            TypedLookup::Ambiguous(_) => {
+                return Err(ValidationError::AmbiguousSupportingFact.into())
+            }
+            TypedLookup::InvalidMatch(records) => {
+                return Err(fact_invalid_error(&records, fact_id).into())
+            }
+        }
+    }
+    Ok(resolved)
+}
+
+/// Resolve every linked `interpretation_id` to exactly one existing
+/// interpretation. Same failure mapping shape as facts.
+pub async fn resolve_linked_interpretations(
+    backend: &dyn MemoryBackend,
+    interpretation_ids: &[String],
+) -> Result<Vec<MemoryRecord>, PsychMemoryError> {
+    let mut resolved = Vec::with_capacity(interpretation_ids.len());
+    for interpretation_id in interpretation_ids {
+        match resolve_interpretation_by_interpretation_id(backend, interpretation_id).await? {
+            TypedLookup::Found(memory) => resolved.push(memory),
+            TypedLookup::NotFound => return Err(ValidationError::UnknownInterpretation.into()),
+            TypedLookup::Ambiguous(_) => {
+                return Err(ValidationError::AmbiguousInterpretation.into())
+            }
+            TypedLookup::InvalidMatch(records) => {
+                return Err(interpretation_invalid_error(&records, interpretation_id).into())
+            }
+        }
+    }
+    Ok(resolved)
 }
 
 #[cfg(test)]
-mod tests {
+mod fact_tests {
     use super::*;
     use crate::backend::FakeMemoryBackend;
     use crate::model::StoreMemoryRequest;
     use serde_json::json;
 
-    /// Build a stored memory that looks like a Story 1 journal fact.
     fn fact_request(fact_id: &str, content: &str) -> StoreMemoryRequest {
         StoreMemoryRequest {
             content: content.to_string(),
             memory_type: "fact".into(),
             tags: vec![
                 "epistemic:fact".into(),
-                "epistemic_status:journal_reported".into(),
                 "source:froid".into(),
-                "fact_type:self_report".into(),
                 format!("fact_id:{fact_id}"),
             ],
-            metadata: json!({
-                "fact_id": fact_id,
-                "schema_version": FACT_SCHEMA_VERSION,
-            }),
+            metadata: json!({ "fact_id": fact_id, "schema_version": FACT_SCHEMA_VERSION }),
         }
     }
 
@@ -159,93 +187,80 @@ mod tests {
         backend.store_memory(req).await.unwrap();
     }
 
+    fn code(err: PsychMemoryError) -> String {
+        match err {
+            PsychMemoryError::Validation(v) => v.error_code().to_string(),
+            other => panic!("expected validation error, got {other}"),
+        }
+    }
+
     #[tokio::test]
     async fn accepts_existing_valid_supporting_fact() {
         let backend = FakeMemoryBackend::new();
-        store(&backend, fact_request("fact_a", "excerpt a")).await;
-
+        store(&backend, fact_request("fact_a", "excerpt")).await;
         let resolved = resolve_supporting_facts(&backend, &["fact_a".to_string()])
             .await
             .unwrap();
         assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].metadata["fact_id"], "fact_a");
     }
 
     #[tokio::test]
     async fn rejects_unknown_supporting_fact() {
         let backend = FakeMemoryBackend::new();
-        let err = resolve_supporting_facts(&backend, &["fact_missing".to_string()])
+        let err = resolve_supporting_facts(&backend, &["nope".to_string()])
             .await
             .unwrap_err();
-        assert!(matches!(
-            err,
-            PsychMemoryError::Validation(ValidationError::UnknownSupportingFact)
-        ));
+        assert_eq!(code(err), "unknown_supporting_fact");
     }
 
     #[tokio::test]
-    async fn rejects_ambiguous_supporting_fact() {
+    async fn rejects_ambiguous_supporting_fact_when_two_valid() {
         let backend = FakeMemoryBackend::new();
-        // Two distinct memories carrying the same fact_id tag.
-        store(&backend, fact_request("fact_dup", "excerpt one")).await;
-        store(&backend, fact_request("fact_dup", "excerpt two")).await;
-
+        store(&backend, fact_request("fact_dup", "one")).await;
+        store(&backend, fact_request("fact_dup", "two")).await;
         let err = resolve_supporting_facts(&backend, &["fact_dup".to_string()])
             .await
             .unwrap_err();
-        assert!(matches!(
-            err,
-            PsychMemoryError::Validation(ValidationError::AmbiguousSupportingFact)
-        ));
+        assert_eq!(code(err), "ambiguous_supporting_fact");
     }
 
     #[tokio::test]
-    async fn rejects_non_fact_supporting_memory() {
+    async fn mixed_valid_and_invalid_fact_matches_returns_found() {
         let backend = FakeMemoryBackend::new();
-        let mut req = fact_request("fact_x", "excerpt");
-        req.memory_type = "interpretation".into(); // not a fact
-        store(&backend, req).await;
+        store(&backend, fact_request("fact_m", "valid")).await;
+        let mut bad = fact_request("fact_m", "corrupt");
+        bad.memory_type = "observation".into(); // not a fact
+        store(&backend, bad).await;
+        // One valid + one corrupt -> Found (no longer Ambiguous).
+        let resolved = resolve_supporting_facts(&backend, &["fact_m".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].content, "valid");
+    }
 
+    #[tokio::test]
+    async fn all_invalid_non_fact_matches_returns_invalid() {
+        let backend = FakeMemoryBackend::new();
+        let mut bad = fact_request("fact_x", "corrupt");
+        bad.memory_type = "interpretation".into();
+        store(&backend, bad).await;
         let err = resolve_supporting_facts(&backend, &["fact_x".to_string()])
             .await
             .unwrap_err();
-        assert!(matches!(
-            err,
-            PsychMemoryError::Validation(ValidationError::InvalidSupportingFact)
-        ));
+        assert_eq!(code(err), "invalid_supporting_fact");
     }
 
     #[tokio::test]
-    async fn rejects_supporting_fact_metadata_mismatch() {
+    async fn supporting_fact_metadata_mismatch_is_specific() {
         let backend = FakeMemoryBackend::new();
-        let mut req = fact_request("fact_y", "excerpt");
-        // Tagged fact_id:fact_y, but metadata says something else.
-        req.metadata = json!({ "fact_id": "fact_OTHER", "schema_version": FACT_SCHEMA_VERSION });
-        store(&backend, req).await;
-
+        let mut bad = fact_request("fact_y", "x");
+        bad.metadata = json!({ "fact_id": "fact_OTHER", "schema_version": FACT_SCHEMA_VERSION });
+        store(&backend, bad).await;
         let err = resolve_supporting_facts(&backend, &["fact_y".to_string()])
             .await
             .unwrap_err();
-        assert!(matches!(
-            err,
-            PsychMemoryError::Validation(ValidationError::SupportingFactIdMismatch)
-        ));
-    }
-
-    #[tokio::test]
-    async fn rejects_wrong_schema_version() {
-        let backend = FakeMemoryBackend::new();
-        let mut req = fact_request("fact_z", "excerpt");
-        req.metadata = json!({ "fact_id": "fact_z", "schema_version": "something.else.v9" });
-        store(&backend, req).await;
-
-        let err = resolve_supporting_facts(&backend, &["fact_z".to_string()])
-            .await
-            .unwrap_err();
-        assert!(matches!(
-            err,
-            PsychMemoryError::Validation(ValidationError::InvalidSupportingFact)
-        ));
+        assert_eq!(code(err), "supporting_fact_id_mismatch");
     }
 }
 
@@ -262,14 +277,10 @@ mod pattern_lookup_tests {
             memory_type: "pattern_seed".into(),
             tags: vec![
                 "epistemic:pattern_seed".into(),
-                "epistemic_status:observation_category".into(),
                 "status:seed".into(),
                 format!("pattern_id:{pattern_id}"),
             ],
-            metadata: json!({
-                "pattern_id": pattern_id,
-                "schema_version": PATTERN_SCHEMA_VERSION,
-            }),
+            metadata: json!({ "pattern_id": pattern_id, "schema_version": PATTERN_SCHEMA_VERSION }),
         }
     }
 
@@ -278,71 +289,160 @@ mod pattern_lookup_tests {
     }
 
     #[tokio::test]
-    async fn returns_not_found_when_no_pattern_seed_exists() {
+    async fn not_found_when_none() {
         let backend = FakeMemoryBackend::new();
-        let r = resolve_pattern_seed_by_pattern_id(&backend, "pattern_savior")
+        let r = resolve_pattern_seed_by_pattern_id(&backend, "pattern_x")
             .await
             .unwrap();
-        assert!(matches!(r, PatternSeedLookup::NotFound));
+        assert!(matches!(r, TypedLookup::NotFound));
     }
 
     #[tokio::test]
-    async fn returns_found_when_one_valid_pattern_seed_exists() {
+    async fn found_when_one_valid() {
         let backend = FakeMemoryBackend::new();
-        store(&backend, seed_request("pattern_savior", "Savior — desc")).await;
-        let r = resolve_pattern_seed_by_pattern_id(&backend, "pattern_savior")
+        store(&backend, seed_request("pattern_x", "d")).await;
+        let r = resolve_pattern_seed_by_pattern_id(&backend, "pattern_x")
             .await
             .unwrap();
-        assert!(matches!(r, PatternSeedLookup::Found(_)));
+        assert!(matches!(r, TypedLookup::Found(_)));
     }
 
     #[tokio::test]
-    async fn more_than_one_valid_pattern_match_returns_ambiguous() {
+    async fn ambiguous_when_two_valid() {
         let backend = FakeMemoryBackend::new();
-        store(&backend, seed_request("pattern_savior", "Savior — one")).await;
-        store(&backend, seed_request("pattern_savior", "Savior — two")).await;
-        let r = resolve_pattern_seed_by_pattern_id(&backend, "pattern_savior")
+        store(&backend, seed_request("pattern_x", "one")).await;
+        store(&backend, seed_request("pattern_x", "two")).await;
+        let r = resolve_pattern_seed_by_pattern_id(&backend, "pattern_x")
             .await
             .unwrap();
-        assert!(matches!(r, PatternSeedLookup::Ambiguous(v) if v.len() == 2));
+        assert!(matches!(r, TypedLookup::Ambiguous(v) if v.len() == 2));
     }
 
     #[tokio::test]
-    async fn all_invalid_pattern_matches_returns_invalid_match() {
+    async fn invalid_match_when_all_corrupt() {
         let backend = FakeMemoryBackend::new();
-        // Carries the tag but is not a pattern_seed memory type.
-        let mut bad = seed_request("pattern_savior", "tampered");
+        let mut bad = seed_request("pattern_x", "corrupt");
         bad.memory_type = "fact".into();
         store(&backend, bad).await;
-        let r = resolve_pattern_seed_by_pattern_id(&backend, "pattern_savior")
+        let r = resolve_pattern_seed_by_pattern_id(&backend, "pattern_x")
             .await
             .unwrap();
-        assert!(matches!(r, PatternSeedLookup::InvalidMatch(v) if v.len() == 1));
+        assert!(matches!(r, TypedLookup::InvalidMatch(_)));
     }
 
     #[tokio::test]
-    async fn invalid_when_metadata_pattern_id_mismatch() {
+    async fn mixed_valid_and_invalid_returns_found() {
         let backend = FakeMemoryBackend::new();
-        let mut bad = seed_request("pattern_savior", "x");
-        bad.metadata =
-            json!({ "pattern_id": "pattern_OTHER", "schema_version": PATTERN_SCHEMA_VERSION });
-        store(&backend, bad).await;
-        let r = resolve_pattern_seed_by_pattern_id(&backend, "pattern_savior")
-            .await
-            .unwrap();
-        assert!(matches!(r, PatternSeedLookup::InvalidMatch(_)));
-    }
-
-    #[tokio::test]
-    async fn mixed_valid_and_invalid_pattern_matches_returns_found() {
-        let backend = FakeMemoryBackend::new();
-        store(&backend, seed_request("pattern_savior", "Savior — valid")).await;
-        let mut bad = seed_request("pattern_savior", "corrupt");
+        store(&backend, seed_request("pattern_x", "valid")).await;
+        let mut bad = seed_request("pattern_x", "corrupt");
         bad.memory_type = "observation".into();
         store(&backend, bad).await;
-        let r = resolve_pattern_seed_by_pattern_id(&backend, "pattern_savior")
+        let r = resolve_pattern_seed_by_pattern_id(&backend, "pattern_x")
             .await
             .unwrap();
-        assert!(matches!(r, PatternSeedLookup::Found(_)));
+        assert!(matches!(r, TypedLookup::Found(_)));
+    }
+}
+
+#[cfg(test)]
+mod interpretation_tests {
+    use super::*;
+    use crate::backend::FakeMemoryBackend;
+    use crate::model::StoreMemoryRequest;
+    use serde_json::json;
+
+    fn interp_request(interpretation_id: &str, content: &str) -> StoreMemoryRequest {
+        StoreMemoryRequest {
+            content: content.to_string(),
+            memory_type: "interpretation".into(),
+            tags: vec![
+                "epistemic:interpretation".into(),
+                "epistemic_status:hypothesis".into(),
+                format!("interpretation_id:{interpretation_id}"),
+            ],
+            metadata: json!({
+                "interpretation_id": interpretation_id,
+                "schema_version": INTERP_SCHEMA_VERSION,
+            }),
+        }
+    }
+
+    async fn store(backend: &FakeMemoryBackend, req: StoreMemoryRequest) {
+        backend.store_memory(req).await.unwrap();
+    }
+
+    fn code(err: PsychMemoryError) -> String {
+        match err {
+            PsychMemoryError::Validation(v) => v.error_code().to_string(),
+            other => panic!("expected validation error, got {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn accepts_existing_valid_interpretation() {
+        let backend = FakeMemoryBackend::new();
+        store(&backend, interp_request("interp_a", "h")).await;
+        let resolved = resolve_linked_interpretations(&backend, &["interp_a".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(resolved.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn rejects_unknown_interpretation() {
+        let backend = FakeMemoryBackend::new();
+        let err = resolve_linked_interpretations(&backend, &["nope".to_string()])
+            .await
+            .unwrap_err();
+        assert_eq!(code(err), "unknown_interpretation");
+    }
+
+    #[tokio::test]
+    async fn rejects_ambiguous_interpretation() {
+        let backend = FakeMemoryBackend::new();
+        store(&backend, interp_request("interp_d", "one")).await;
+        store(&backend, interp_request("interp_d", "two")).await;
+        let err = resolve_linked_interpretations(&backend, &["interp_d".to_string()])
+            .await
+            .unwrap_err();
+        assert_eq!(code(err), "ambiguous_interpretation");
+    }
+
+    #[tokio::test]
+    async fn mixed_valid_and_invalid_interpretation_matches_returns_found() {
+        let backend = FakeMemoryBackend::new();
+        store(&backend, interp_request("interp_m", "valid")).await;
+        let mut bad = interp_request("interp_m", "corrupt");
+        bad.memory_type = "observation".into();
+        store(&backend, bad).await;
+        let resolved = resolve_linked_interpretations(&backend, &["interp_m".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(resolved.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn all_invalid_interpretation_matches_rejected() {
+        let backend = FakeMemoryBackend::new();
+        let mut bad = interp_request("interp_x", "corrupt");
+        bad.memory_type = "fact".into();
+        store(&backend, bad).await;
+        let err = resolve_linked_interpretations(&backend, &["interp_x".to_string()])
+            .await
+            .unwrap_err();
+        assert_eq!(code(err), "invalid_interpretation");
+    }
+
+    #[tokio::test]
+    async fn interpretation_metadata_mismatch_is_specific() {
+        let backend = FakeMemoryBackend::new();
+        let mut bad = interp_request("interp_y", "x");
+        bad.metadata =
+            json!({ "interpretation_id": "interp_OTHER", "schema_version": INTERP_SCHEMA_VERSION });
+        store(&backend, bad).await;
+        let err = resolve_linked_interpretations(&backend, &["interp_y".to_string()])
+            .await
+            .unwrap_err();
+        assert_eq!(code(err), "interpretation_id_mismatch");
     }
 }

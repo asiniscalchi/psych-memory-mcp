@@ -3,6 +3,7 @@
 pub mod backend_request;
 pub mod interpretation;
 pub mod journal_fact;
+pub mod pattern_occurrence;
 pub mod pattern_seed;
 
 pub use backend_request::{BackendStoreResult, StoreMemoryRequest};
@@ -12,5 +13,9 @@ pub use interpretation::{
 };
 pub use journal_fact::{
     FactType, JournalEntryRef, StoreJournalFactInput, StoreJournalFactOutput, ValidatedJournalFact,
+};
+pub use pattern_occurrence::{
+    OccurrencePhase, RecordPatternOccurrenceInput, RecordPatternOccurrenceOutput,
+    ValidatedPatternOccurrence,
 };
 pub use pattern_seed::{CreatePatternSeedInput, CreatePatternSeedOutput, ValidatedPatternSeed};

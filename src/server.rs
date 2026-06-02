@@ -14,21 +14,26 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler};
 use crate::backend::MemoryBackend;
 use crate::errors::{PsychMemoryError, ValidationError};
 use crate::evidence::{
-    resolve_pattern_seed_by_pattern_id, resolve_supporting_facts, PatternSeedLookup,
+    resolve_linked_interpretations, resolve_pattern_seed_by_pattern_id, resolve_supporting_facts,
 };
 use crate::fact_id::generate_fact_id;
 use crate::interpretation_id::generate_interpretation_id;
 use crate::mapping::{
-    map_create_pattern_seed_to_backend_request, map_store_interpretation_to_backend_request,
-    map_store_journal_fact_to_backend_request,
+    map_create_pattern_seed_to_backend_request, map_record_pattern_occurrence_to_backend_request,
+    map_store_interpretation_to_backend_request, map_store_journal_fact_to_backend_request,
 };
 use crate::model::{
-    CreatePatternSeedInput, CreatePatternSeedOutput, StoreInterpretationInput,
-    StoreInterpretationOutput, StoreJournalFactInput, StoreJournalFactOutput,
+    CreatePatternSeedInput, CreatePatternSeedOutput, RecordPatternOccurrenceInput,
+    RecordPatternOccurrenceOutput, StoreInterpretationInput, StoreInterpretationOutput,
+    StoreJournalFactInput, StoreJournalFactOutput,
 };
+use crate::occurrence_id::generate_occurrence_id;
 use crate::pattern_id::generate_pattern_id;
 use crate::pattern_validation::validate_create_pattern_seed;
-use crate::validators::{validate_store_interpretation, validate_store_journal_fact};
+use crate::resolution::TypedLookup;
+use crate::validators::{
+    validate_record_pattern_occurrence, validate_store_interpretation, validate_store_journal_fact,
+};
 
 #[derive(Clone)]
 pub struct PsychMemoryServer {
@@ -127,17 +132,17 @@ impl PsychMemoryServer {
         let pattern_id = generate_pattern_id(&validated);
 
         match resolve_pattern_seed_by_pattern_id(self.backend.as_ref(), &pattern_id).await? {
-            PatternSeedLookup::NotFound => {}
-            PatternSeedLookup::Found(existing) => {
+            TypedLookup::NotFound => {}
+            TypedLookup::Found(existing) => {
                 return Ok(CreatePatternSeedOutput::AlreadyExists {
                     pattern_id,
                     backend_memory_id: Some(existing.content_hash),
                 });
             }
-            PatternSeedLookup::Ambiguous(_) => {
+            TypedLookup::Ambiguous(_) => {
                 return Ok(rejected_pattern(&ValidationError::AmbiguousPatternSeed));
             }
-            PatternSeedLookup::InvalidMatch(_) => {
+            TypedLookup::InvalidMatch(_) => {
                 return Ok(rejected_pattern(&ValidationError::InvalidPatternSeedMatch));
             }
         }
@@ -149,6 +154,80 @@ impl PsychMemoryServer {
             pattern_id,
             backend_memory_id: Some(stored.backend_memory_id),
         })
+    }
+
+    /// The `record_pattern_occurrence` flow, independent of the MCP envelope.
+    ///
+    /// Resolves the pattern seed, every supporting fact, and any linked
+    /// interpretation before storing. Validation/resolution failures become
+    /// structured rejections; backend failures propagate as `Err`. The
+    /// PatternSeed is only read, never mutated.
+    pub async fn record_pattern_occurrence_flow(
+        &self,
+        input: RecordPatternOccurrenceInput,
+    ) -> Result<RecordPatternOccurrenceOutput, PsychMemoryError> {
+        let validated = match validate_record_pattern_occurrence(&input) {
+            Ok(v) => v,
+            Err(err) => return Ok(rejected_occurrence(&err)),
+        };
+
+        match resolve_pattern_seed_by_pattern_id(self.backend.as_ref(), &validated.pattern_id)
+            .await?
+        {
+            TypedLookup::Found(_) => {}
+            TypedLookup::NotFound => {
+                return Ok(rejected_occurrence(&ValidationError::UnknownPatternSeed));
+            }
+            TypedLookup::Ambiguous(_) => {
+                return Ok(rejected_occurrence(&ValidationError::AmbiguousPatternSeed));
+            }
+            TypedLookup::InvalidMatch(_) => {
+                return Ok(rejected_occurrence(
+                    &ValidationError::InvalidPatternSeedMatch,
+                ));
+            }
+        }
+
+        if let Some(rejection) = resolve_or_reject(
+            resolve_supporting_facts(self.backend.as_ref(), &validated.fact_ids).await,
+        )? {
+            return Ok(rejection);
+        }
+        if let Some(rejection) = resolve_or_reject(
+            resolve_linked_interpretations(self.backend.as_ref(), &validated.interpretation_ids)
+                .await,
+        )? {
+            return Ok(rejection);
+        }
+
+        let occurrence_id = generate_occurrence_id(&validated);
+        let request = map_record_pattern_occurrence_to_backend_request(&validated, &occurrence_id);
+        let stored = self.backend.store_memory(request).await?;
+
+        Ok(RecordPatternOccurrenceOutput::Stored {
+            occurrence_id,
+            backend_memory_id: Some(stored.backend_memory_id),
+            status: "stored".to_string(),
+        })
+    }
+}
+
+/// Turn a list-resolver result into either a structured rejection (domain
+/// validation error) or `None` (success), propagating transport errors as `Err`.
+fn resolve_or_reject<T>(
+    result: Result<T, PsychMemoryError>,
+) -> Result<Option<RecordPatternOccurrenceOutput>, PsychMemoryError> {
+    match result {
+        Ok(_) => Ok(None),
+        Err(PsychMemoryError::Validation(v)) => Ok(Some(rejected_occurrence(&v))),
+        Err(other) => Err(other),
+    }
+}
+
+fn rejected_occurrence(err: &ValidationError) -> RecordPatternOccurrenceOutput {
+    RecordPatternOccurrenceOutput::Rejected {
+        error_code: err.error_code().to_string(),
+        message: err.to_string(),
     }
 }
 
@@ -240,6 +319,35 @@ impl PsychMemoryServer {
                 Ok(CallToolResult::success(vec![content]))
             }
             CreatePatternSeedOutput::Rejected { .. } => Ok(CallToolResult::error(vec![content])),
+        }
+    }
+
+    #[tool(
+        description = "Record a concrete dated occurrence of a pattern seed in one episode. \
+                       Requires an existing pattern_id and at least one existing fact_id; \
+                       interpretation_ids are optional. Provide occurrence_date (YYYY-MM-DD), a \
+                       phase (activated / recognized_before_action / recognized_after_action / \
+                       inhibited / not_activated / transformed), a summary describing THIS episode \
+                       only (not a global identity claim), a confidence, and an optional intensity. \
+                       This does not activate the pattern."
+    )]
+    async fn record_pattern_occurrence(
+        &self,
+        Parameters(input): Parameters<RecordPatternOccurrenceInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let outcome = self
+            .record_pattern_occurrence_flow(input)
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("backend store failed: {e}"), None))?;
+
+        let content = Content::json(&outcome)?;
+        match outcome {
+            RecordPatternOccurrenceOutput::Stored { .. } => {
+                Ok(CallToolResult::success(vec![content]))
+            }
+            RecordPatternOccurrenceOutput::Rejected { .. } => {
+                Ok(CallToolResult::error(vec![content]))
+            }
         }
     }
 }

@@ -21,7 +21,7 @@ services:
       # Register the wrapper's memory types. Without this the service silently
       # downgrades unknown memory_types (e.g. "fact", "interpretation") to
       # "observation".
-      MCP_CUSTOM_MEMORY_TYPES: '{"fact": [], "interpretation": [], "pattern_seed": []}'
+      MCP_CUSTOM_MEMORY_TYPES: '{"fact": [], "interpretation": [], "pattern_seed": [], "pattern_occurrence": []}'
       MCP_MEMORY_SQLITE_PATH: /app/data/sqlite_db
       MCP_MEMORY_BACKUPS_PATH: /app/data/backups
     volumes:
