@@ -12,5 +12,6 @@ pub mod hashing;
 pub mod interpretation_id;
 pub mod mapping;
 pub mod model;
+pub mod pattern_validation;
 pub mod server;
 pub mod validators;

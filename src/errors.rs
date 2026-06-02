@@ -49,6 +49,38 @@ pub enum ValidationError {
     InvalidSupportingFact,
     #[error("Resolved fact metadata.fact_id does not match the requested fact_id.")]
     SupportingFactIdMismatch,
+
+    // --- Pattern seed (Story 3) ---
+    #[error("Pattern seed requires a name.")]
+    EmptyPatternName,
+    #[error(
+        "Pattern slug must match ^[a-z][a-z0-9_]*$ and must not contain consecutive underscores."
+    )]
+    InvalidPatternSlug,
+    #[error("Pattern seed requires a description.")]
+    EmptyPatternDescription,
+    #[error("Pattern seed requires at least one marker.")]
+    MissingPatternMarkers,
+    #[error("Pattern markers must not contain empty values.")]
+    EmptyPatternMarker,
+    #[error("Pattern seed requires at least one counter-marker.")]
+    MissingPatternCounterMarkers,
+    #[error("Pattern counter-markers must not contain empty values.")]
+    EmptyPatternCounterMarker,
+    #[error(
+        "Pattern seed must not claim that the user has, is, or actively expresses the pattern."
+    )]
+    PatternIdentityClaim,
+    #[error("Pattern aliases must not be empty after normalization.")]
+    EmptyPatternAlias,
+    #[error("Pattern aliases must be unique after normalization.")]
+    DuplicatePatternAlias,
+    #[error("Pattern alias must not duplicate the slug.")]
+    AliasEqualsSlug,
+    #[error("More than one pattern seed matched the same pattern_id.")]
+    AmbiguousPatternSeed,
+    #[error("Memories tagged with this pattern_id are not valid pattern seeds.")]
+    InvalidPatternSeedMatch,
 }
 
 impl ValidationError {
@@ -75,6 +107,19 @@ impl ValidationError {
             ValidationError::AmbiguousSupportingFact => "ambiguous_supporting_fact",
             ValidationError::InvalidSupportingFact => "invalid_supporting_fact",
             ValidationError::SupportingFactIdMismatch => "supporting_fact_id_mismatch",
+            ValidationError::EmptyPatternName => "empty_pattern_name",
+            ValidationError::InvalidPatternSlug => "invalid_pattern_slug",
+            ValidationError::EmptyPatternDescription => "empty_pattern_description",
+            ValidationError::MissingPatternMarkers => "missing_pattern_markers",
+            ValidationError::EmptyPatternMarker => "empty_pattern_marker",
+            ValidationError::MissingPatternCounterMarkers => "missing_pattern_counter_markers",
+            ValidationError::EmptyPatternCounterMarker => "empty_pattern_counter_marker",
+            ValidationError::PatternIdentityClaim => "pattern_identity_claim",
+            ValidationError::EmptyPatternAlias => "empty_pattern_alias",
+            ValidationError::DuplicatePatternAlias => "duplicate_pattern_alias",
+            ValidationError::AliasEqualsSlug => "alias_equals_slug",
+            ValidationError::AmbiguousPatternSeed => "ambiguous_pattern_seed",
+            ValidationError::InvalidPatternSeedMatch => "invalid_pattern_seed_match",
         }
     }
 }
