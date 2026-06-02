@@ -72,9 +72,11 @@ The memory-service identifies records by **`content_hash`** (a SHA-256 of the
 content), which the wrapper uses as the stable memory id. Storing identical
 content is therefore idempotent.
 
-> **Note:** memory_type `fact` is not in the service's default ontology and is
-> silently downgraded to `observation` unless the service is started with
-> `MCP_CUSTOM_MEMORY_TYPES='{"fact": []}'` (set in `docker-compose.yml`).
+> **Note:** the `fact` and `interpretation` memory types are not in the
+> service's default ontology and are silently downgraded to `observation`
+> unless the service is started with
+> `MCP_CUSTOM_MEMORY_TYPES='{"fact": [], "interpretation": []}'` (set in
+> `docker-compose.yml`).
 
 ## Configuration
 
