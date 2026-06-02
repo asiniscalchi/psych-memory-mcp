@@ -1,0 +1,54 @@
+# Two-container topology for psych-memory-mcp.
+#
+#   assistant / 1MCP gateway
+#            │  http://<host>:10006/mcp
+#            ▼
+#   ┌──────────────────┐      http://memory:8000/api/...      ┌────────────┐
+#   │ psych-memory-mcp │ ───────────────────────────────────▶ │   memory   │
+#   │  (the only door) │                                       │ (internal) │
+#   └──────────────────┘                                       └────────────┘
+#
+# The memory-service has NO published port: it is reachable only on the
+# internal compose network, so the assistant can never bypass the wrapper.
+services:
+  memory:
+    image: doobidoo/mcp-memory-service:latest
+    environment:
+      MCP_MODE: http
+      MCP_HTTP_HOST: 0.0.0.0
+      MCP_HTTP_PORT: "8000"
+      MCP_ALLOW_ANONYMOUS_ACCESS: "true"
+      # Register "fact" as a first-class memory type. Without this the service
+      # silently downgrades memory_type "fact" -> "observation".
+      MCP_CUSTOM_MEMORY_TYPES: '{"fact": []}'
+      MCP_MEMORY_SQLITE_PATH: /app/data/sqlite_db
+      MCP_MEMORY_BACKUPS_PATH: /app/data/backups
+    volumes:
+      - memory_data:/app/data
+    # Intentionally no `ports:` — internal only.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=3); sys.exit(0 if r.status==200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+    restart: unless-stopped
+
+  psych-memory-mcp:
+    build: .
+    environment:
+      HTTP_BIND: 0.0.0.0:8000
+      MEMORY_BASE_URL: http://memory:8000
+    ports:
+      # The wrapper is the only exposed service. Point the 1MCP gateway at
+      # http://<host>:10006/mcp.
+      - "10006:8000"
+    depends_on:
+      memory:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  memory_data:
