@@ -20,13 +20,15 @@ pub use fake::FakeMemoryBackend;
 pub use reqwest_backend::ReqwestMemoryBackend;
 
 use crate::errors::PsychMemoryError;
+use crate::model::{BackendStoreResult, StoreMemoryRequest};
 use async_trait::async_trait;
 
 /// A memory as returned by the backend.
 ///
 /// The memory-service identifies records by `content_hash` (a SHA-256 of the
-/// content), so that doubles as the stable id the wrapper hands back to callers
-/// and that future epistemic links (Story 2's `supported_by`) point at.
+/// content); the wrapper surfaces this as `backend_memory_id`. It is distinct
+/// from the wrapper's own `fact_id`, which is what later epistemic links point
+/// at.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemoryRecord {
     pub content: String,
@@ -38,14 +40,11 @@ pub struct MemoryRecord {
 
 #[async_trait]
 pub trait MemoryBackend: Send + Sync {
-    /// Store a memory and return its `content_hash`.
+    /// Store a memory and return the backend's id for it.
     async fn store_memory(
         &self,
-        content: String,
-        memory_type: String,
-        tags: Vec<String>,
-        metadata: serde_json::Value,
-    ) -> Result<String, PsychMemoryError>;
+        request: StoreMemoryRequest,
+    ) -> Result<BackendStoreResult, PsychMemoryError>;
 
     /// Fetch a memory by `content_hash`. Returns `None` if it does not exist.
     async fn get_memory(

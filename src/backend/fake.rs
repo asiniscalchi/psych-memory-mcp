@@ -15,6 +15,7 @@ use async_trait::async_trait;
 
 use super::{MemoryBackend, MemoryRecord};
 use crate::errors::PsychMemoryError;
+use crate::model::{BackendStoreResult, StoreMemoryRequest};
 
 #[derive(Default)]
 pub struct FakeMemoryBackend {
@@ -37,24 +38,23 @@ impl FakeMemoryBackend {
 impl MemoryBackend for FakeMemoryBackend {
     async fn store_memory(
         &self,
-        content: String,
-        memory_type: String,
-        tags: Vec<String>,
-        metadata: serde_json::Value,
-    ) -> Result<String, PsychMemoryError> {
-        let content_hash = Self::hash(&content);
+        request: StoreMemoryRequest,
+    ) -> Result<BackendStoreResult, PsychMemoryError> {
+        let content_hash = Self::hash(&request.content);
         let record = MemoryRecord {
-            content,
-            memory_type,
-            tags,
+            content: request.content,
+            memory_type: request.memory_type,
+            tags: request.tags,
             content_hash: content_hash.clone(),
-            metadata,
+            metadata: request.metadata,
         };
         self.store
             .lock()
             .expect("fake backend mutex poisoned")
             .insert(content_hash.clone(), record);
-        Ok(content_hash)
+        Ok(BackendStoreResult {
+            backend_memory_id: content_hash,
+        })
     }
 
     async fn get_memory(

@@ -14,6 +14,7 @@
 //! this test a guard on the compose configuration, not just the transport.
 
 use psych_memory_mcp::backend::{MemoryBackend, ReqwestMemoryBackend};
+use psych_memory_mcp::model::StoreMemoryRequest;
 use serde_json::json;
 
 fn base_url() -> String {
@@ -37,15 +38,16 @@ async fn store_and_read_back_through_real_service() {
         .as_nanos();
     let content = format!("FACT: story0 roundtrip {nonce}");
 
-    let hash = backend
-        .store_memory(
-            content.clone(),
-            "fact".into(),
-            vec!["epistemic:fact".into(), "source:test".into()],
-            json!({ "test": true }),
-        )
+    let stored = backend
+        .store_memory(StoreMemoryRequest {
+            content: content.clone(),
+            memory_type: "fact".into(),
+            tags: vec!["epistemic:fact".into(), "source:test".into()],
+            metadata: json!({ "test": true }),
+        })
         .await
         .expect("store should succeed");
+    let hash = stored.backend_memory_id;
 
     let got = backend
         .get_memory(&hash)
