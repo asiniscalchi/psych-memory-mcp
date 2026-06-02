@@ -18,9 +18,10 @@ services:
       MCP_HTTP_HOST: 0.0.0.0
       MCP_HTTP_PORT: "8000"
       MCP_ALLOW_ANONYMOUS_ACCESS: "true"
-      # Register "fact" as a first-class memory type. Without this the service
-      # silently downgrades memory_type "fact" -> "observation".
-      MCP_CUSTOM_MEMORY_TYPES: '{"fact": []}'
+      # Register the wrapper's memory types. Without this the service silently
+      # downgrades unknown memory_types (e.g. "fact", "interpretation") to
+      # "observation".
+      MCP_CUSTOM_MEMORY_TYPES: '{"fact": [], "interpretation": []}'
       MCP_MEMORY_SQLITE_PATH: /app/data/sqlite_db
       MCP_MEMORY_BACKUPS_PATH: /app/data/backups
     volumes:

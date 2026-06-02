@@ -5,7 +5,7 @@
 /// Each variant maps to a stable `error_code` (returned to the MCP client in
 /// the structured `{ ok: false, error_code, message }` shape) and a
 /// human-readable message via `Display`.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ValidationError {
     #[error("Journal fact requires a source excerpt.")]
     EmptySourceExcerpt,
@@ -21,6 +21,34 @@ pub enum ValidationError {
     InvalidEventDate,
     #[error("JournalEntryRef.char_start cannot be greater than char_end.")]
     InvalidCharRange,
+
+    // --- Interpretation (Story 2) ---
+    #[error("Interpretation requires a hypothesis.")]
+    EmptyHypothesis,
+    #[error("Interpretation requires at least one supporting fact_id.")]
+    MissingSupportingFacts,
+    #[error("supported_by_fact_ids must not contain empty values.")]
+    EmptySupportingFactId,
+    #[error("contradicted_by_fact_ids must not contain empty values.")]
+    EmptyContradictedFactId,
+    #[error("confidence must be finite and between 0.0 and 1.0.")]
+    InvalidConfidence,
+    #[error("confidence > {threshold} requires at least {min} supporting facts.")]
+    OverconfidentInterpretation { threshold: f32, min: usize },
+    #[error("Story 2 only allows status = candidate.")]
+    UnsupportedInterpretationStatus,
+    #[error("Interpretation requires a falsification question.")]
+    MissingFalsificationQuestion,
+    #[error("review_due must be YYYY-MM-DD when provided.")]
+    InvalidReviewDue,
+    #[error("One or more supporting fact_ids could not be resolved.")]
+    UnknownSupportingFact,
+    #[error("More than one fact matched the same fact_id.")]
+    AmbiguousSupportingFact,
+    #[error("Resolved supporting memory is not a valid journal fact.")]
+    InvalidSupportingFact,
+    #[error("Resolved fact metadata.fact_id does not match the requested fact_id.")]
+    SupportingFactIdMismatch,
 }
 
 impl ValidationError {
@@ -34,6 +62,19 @@ impl ValidationError {
             ValidationError::InvalidJournalEntryDate => "invalid_journal_entry_date",
             ValidationError::InvalidEventDate => "invalid_event_date",
             ValidationError::InvalidCharRange => "invalid_char_range",
+            ValidationError::EmptyHypothesis => "empty_hypothesis",
+            ValidationError::MissingSupportingFacts => "missing_supporting_facts",
+            ValidationError::EmptySupportingFactId => "empty_supporting_fact_id",
+            ValidationError::EmptyContradictedFactId => "empty_contradicted_fact_id",
+            ValidationError::InvalidConfidence => "invalid_confidence",
+            ValidationError::OverconfidentInterpretation { .. } => "overconfident_interpretation",
+            ValidationError::UnsupportedInterpretationStatus => "unsupported_interpretation_status",
+            ValidationError::MissingFalsificationQuestion => "missing_falsification_question",
+            ValidationError::InvalidReviewDue => "invalid_review_due",
+            ValidationError::UnknownSupportingFact => "unknown_supporting_fact",
+            ValidationError::AmbiguousSupportingFact => "ambiguous_supporting_fact",
+            ValidationError::InvalidSupportingFact => "invalid_supporting_fact",
+            ValidationError::SupportingFactIdMismatch => "supporting_fact_id_mismatch",
         }
     }
 }

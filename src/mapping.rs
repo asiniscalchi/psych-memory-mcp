@@ -14,8 +14,14 @@
 
 use serde_json::json;
 
+use crate::model::interpretation::{
+    EPISTEMIC_STATUS as INTERP_EPISTEMIC_STATUS, MEMORY_TYPE as INTERP_MEMORY_TYPE,
+    SCHEMA_VERSION as INTERP_SCHEMA_VERSION,
+};
 use crate::model::journal_fact::{EPISTEMIC_STATUS, MEMORY_TYPE, SCHEMA_VERSION};
-use crate::model::{StoreMemoryRequest, ValidatedJournalFact};
+use crate::model::{
+    InterpretationStatus, StoreMemoryRequest, ValidatedInterpretation, ValidatedJournalFact,
+};
 
 /// Build the backend store request for a validated fact and its `fact_id`.
 pub fn map_store_journal_fact_to_backend_request(
@@ -46,6 +52,56 @@ pub fn map_store_journal_fact_to_backend_request(
     StoreMemoryRequest {
         content: fact.source_excerpt.clone(),
         memory_type: MEMORY_TYPE.to_string(),
+        tags,
+        metadata,
+    }
+}
+
+/// Build the backend store request for a validated interpretation.
+///
+/// Backend content rule: `content` is the hypothesis text (no `INTERPRETATION:`
+/// prefix); memory_type, tags and metadata already convey structure.
+///
+/// Known collision risk (deferred, see README): the backend keys records on
+/// `content_hash = sha256(content) = sha256(hypothesis)`. Two interpretations
+/// with the same hypothesis but different supporting facts have *different*
+/// `interpretation_id`s yet identical backend content, so one may overwrite the
+/// other. Story 2 documents this; it is not solved here.
+pub fn map_store_interpretation_to_backend_request(
+    interpretation: &ValidatedInterpretation,
+    interpretation_id: &str,
+) -> StoreMemoryRequest {
+    let interpretation_type = interpretation.interpretation_type.as_str();
+    let status = InterpretationStatus::Candidate.as_str();
+
+    let mut tags = vec![
+        "epistemic:interpretation".to_string(),
+        format!("epistemic_status:{INTERP_EPISTEMIC_STATUS}"),
+        format!("interpretation_type:{interpretation_type}"),
+        format!("status:{status}"),
+        format!("interpretation_id:{interpretation_id}"),
+    ];
+    for fact_id in &interpretation.supported_by_fact_ids {
+        tags.push(format!("supported_by:{fact_id}"));
+    }
+
+    let metadata = json!({
+        "interpretation_id": interpretation_id,
+        "hypothesis": interpretation.hypothesis,
+        "interpretation_type": interpretation_type,
+        "epistemic_status": INTERP_EPISTEMIC_STATUS,
+        "status": status,
+        "supported_by_fact_ids": interpretation.supported_by_fact_ids,
+        "contradicted_by_fact_ids": interpretation.contradicted_by_fact_ids,
+        "confidence": interpretation.confidence,
+        "falsification_question": interpretation.falsification_question,
+        "review_due": interpretation.review_due,
+        "schema_version": INTERP_SCHEMA_VERSION,
+    });
+
+    StoreMemoryRequest {
+        content: interpretation.hypothesis.clone(),
+        memory_type: INTERP_MEMORY_TYPE.to_string(),
         tags,
         metadata,
     }
@@ -131,5 +187,92 @@ mod tests {
             "froid_2026_06_01_abc123"
         );
         assert_eq!(req.metadata["event_date"], serde_json::Value::Null);
+    }
+}
+
+#[cfg(test)]
+mod interpretation_tests {
+    use super::*;
+    use crate::model::InterpretationType;
+
+    fn interp() -> ValidatedInterpretation {
+        ValidatedInterpretation {
+            hypothesis: "Hunger may have functioned as emotional discharge.".into(),
+            interpretation_type: InterpretationType::PsychologicalHypothesis,
+            supported_by_fact_ids: vec!["fact_a".into(), "fact_b".into()],
+            contradicted_by_fact_ids: vec![],
+            confidence: 0.35,
+            falsification_question: "Are there episodes without activation?".into(),
+            review_due: Some("2026-06-09".into()),
+        }
+    }
+
+    fn mapped() -> StoreMemoryRequest {
+        map_store_interpretation_to_backend_request(&interp(), "interp_dead")
+    }
+
+    #[test]
+    fn maps_hypothesis_to_content() {
+        let req = mapped();
+        assert_eq!(
+            req.content,
+            "Hunger may have functioned as emotional discharge."
+        );
+        assert_eq!(req.memory_type, "interpretation");
+        assert!(!req.content.starts_with("INTERPRETATION:"));
+    }
+
+    #[test]
+    fn maps_expected_tags() {
+        let req = mapped();
+        for tag in [
+            "epistemic:interpretation",
+            "epistemic_status:hypothesis",
+            "interpretation_type:psychological_hypothesis",
+            "status:candidate",
+        ] {
+            assert!(req.tags.iter().any(|t| t == tag), "missing tag {tag}");
+        }
+    }
+
+    #[test]
+    fn maps_interpretation_id_tag() {
+        let req = mapped();
+        assert!(req
+            .tags
+            .iter()
+            .any(|t| t == "interpretation_id:interp_dead"));
+        assert_eq!(req.metadata["interpretation_id"], "interp_dead");
+    }
+
+    #[test]
+    fn maps_supported_by_tags() {
+        let req = mapped();
+        assert!(req.tags.iter().any(|t| t == "supported_by:fact_a"));
+        assert!(req.tags.iter().any(|t| t == "supported_by:fact_b"));
+    }
+
+    #[test]
+    fn maps_metadata() {
+        let req = mapped();
+        assert_eq!(req.metadata["hypothesis"], interp().hypothesis);
+        assert_eq!(req.metadata["epistemic_status"], "hypothesis");
+        assert_eq!(req.metadata["status"], "candidate");
+        assert_eq!(
+            req.metadata["supported_by_fact_ids"],
+            serde_json::json!(["fact_a", "fact_b"])
+        );
+        assert_eq!(
+            req.metadata["falsification_question"],
+            "Are there episodes without activation?"
+        );
+    }
+
+    #[test]
+    fn maps_schema_version() {
+        assert_eq!(
+            mapped().metadata["schema_version"],
+            "psych-memory.interpretation.v1"
+        );
     }
 }

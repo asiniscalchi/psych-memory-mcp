@@ -65,3 +65,26 @@ async fn missing_hash_returns_none() {
         .unwrap()
         .is_none());
 }
+
+#[tokio::test]
+async fn find_memories_by_tag_returns_exact_matches() {
+    let backend = FakeMemoryBackend::new();
+    backend
+        .store_memory(request("a", vec!["fact_id:abc".into()], json!({})))
+        .await
+        .unwrap();
+    backend
+        .store_memory(request("b", vec!["fact_id:xyz".into()], json!({})))
+        .await
+        .unwrap();
+
+    let hits = backend.find_memories_by_tag("fact_id:abc").await.unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].content, "a");
+
+    assert!(backend
+        .find_memories_by_tag("fact_id:missing")
+        .await
+        .unwrap()
+        .is_empty());
+}

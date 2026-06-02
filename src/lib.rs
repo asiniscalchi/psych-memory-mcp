@@ -6,7 +6,10 @@
 pub mod backend;
 pub mod config;
 pub mod errors;
+pub mod evidence;
 pub mod fact_id;
+pub mod hashing;
+pub mod interpretation_id;
 pub mod mapping;
 pub mod model;
 pub mod server;

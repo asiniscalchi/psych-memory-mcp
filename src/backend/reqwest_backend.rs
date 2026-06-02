@@ -41,6 +41,12 @@ struct MemoryDto {
 }
 
 #[derive(Deserialize)]
+struct ListResponse {
+    #[serde(default)]
+    memories: Vec<MemoryDto>,
+}
+
+#[derive(Deserialize)]
 struct HealthResponse {
     status: String,
 }
@@ -126,6 +132,39 @@ impl MemoryBackend for ReqwestMemoryBackend {
             content_hash: dto.content_hash,
             metadata: dto.metadata,
         }))
+    }
+
+    async fn find_memories_by_tag(&self, tag: &str) -> Result<Vec<MemoryRecord>, PsychMemoryError> {
+        // page_size is capped at 100 by the service; an exact id-tag yields at
+        // most one match, so a single page is sufficient. reqwest URL-encodes
+        // the `:` in the tag value.
+        let resp = self
+            .client
+            .get(self.url("/api/memories"))
+            .query(&[("tag", tag), ("page_size", "100")])
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(PsychMemoryError::BackendStatus(format!(
+                "list by tag returned {status}: {text}"
+            )));
+        }
+
+        let parsed: ListResponse = resp.json().await?;
+        Ok(parsed
+            .memories
+            .into_iter()
+            .map(|dto| MemoryRecord {
+                content: dto.content,
+                memory_type: dto.memory_type,
+                tags: dto.tags,
+                content_hash: dto.content_hash,
+                metadata: dto.metadata,
+            })
+            .collect())
     }
 
     async fn health(&self) -> Result<(), PsychMemoryError> {

@@ -12,11 +12,18 @@ use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, S
 use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler};
 
 use crate::backend::MemoryBackend;
-use crate::errors::PsychMemoryError;
+use crate::errors::{PsychMemoryError, ValidationError};
+use crate::evidence::resolve_supporting_facts;
 use crate::fact_id::generate_fact_id;
-use crate::mapping::map_store_journal_fact_to_backend_request;
-use crate::model::{StoreJournalFactInput, StoreJournalFactOutput};
-use crate::validators::validate_store_journal_fact;
+use crate::interpretation_id::generate_interpretation_id;
+use crate::mapping::{
+    map_store_interpretation_to_backend_request, map_store_journal_fact_to_backend_request,
+};
+use crate::model::{
+    StoreInterpretationInput, StoreInterpretationOutput, StoreJournalFactInput,
+    StoreJournalFactOutput,
+};
+use crate::validators::{validate_store_interpretation, validate_store_journal_fact};
 
 #[derive(Clone)]
 pub struct PsychMemoryServer {
@@ -61,6 +68,49 @@ impl PsychMemoryServer {
             status: "stored".to_string(),
         })
     }
+
+    /// The `store_interpretation` flow, independent of the MCP envelope.
+    ///
+    /// Both shape validation and evidence-resolution failures are domain
+    /// validation errors and become [`StoreInterpretationOutput::Rejected`];
+    /// only backend/transport failures propagate as `Err`.
+    pub async fn store_interpretation_flow(
+        &self,
+        input: StoreInterpretationInput,
+    ) -> Result<StoreInterpretationOutput, PsychMemoryError> {
+        let validated = match validate_store_interpretation(&input) {
+            Ok(v) => v,
+            Err(err) => return Ok(rejected_interpretation(&err)),
+        };
+
+        // Resolution returns a ValidationError (unknown/ambiguous/invalid fact)
+        // as a structured rejection; a transport failure propagates as Err.
+        if let Err(err) =
+            resolve_supporting_facts(self.backend.as_ref(), &validated.supported_by_fact_ids).await
+        {
+            return match err {
+                PsychMemoryError::Validation(v) => Ok(rejected_interpretation(&v)),
+                other => Err(other),
+            };
+        }
+
+        let interpretation_id = generate_interpretation_id(&validated);
+        let request = map_store_interpretation_to_backend_request(&validated, &interpretation_id);
+        let stored = self.backend.store_memory(request).await?;
+
+        Ok(StoreInterpretationOutput::Stored {
+            interpretation_id,
+            backend_memory_id: Some(stored.backend_memory_id),
+            status: "stored".to_string(),
+        })
+    }
+}
+
+fn rejected_interpretation(err: &ValidationError) -> StoreInterpretationOutput {
+    StoreInterpretationOutput::Rejected {
+        error_code: err.error_code().to_string(),
+        message: err.to_string(),
+    }
 }
 
 #[tool_router(vis = "pub")]
@@ -87,6 +137,29 @@ impl PsychMemoryServer {
         match outcome {
             StoreJournalFactOutput::Stored { .. } => Ok(CallToolResult::success(vec![content])),
             StoreJournalFactOutput::Rejected { .. } => Ok(CallToolResult::error(vec![content])),
+        }
+    }
+
+    #[tool(
+        description = "Store a psychological interpretation (a hypothesis) that must be grounded \
+                       in at least one existing journal fact. Provide the hypothesis, an \
+                       interpretation_type, supported_by_fact_ids (each must resolve to a stored \
+                       fact), a confidence in 0.0..=1.0, and a falsification_question. \
+                       Interpretations are hypotheses, never facts."
+    )]
+    async fn store_interpretation(
+        &self,
+        Parameters(input): Parameters<StoreInterpretationInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let outcome = self
+            .store_interpretation_flow(input)
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("backend store failed: {e}"), None))?;
+
+        let content = Content::json(&outcome)?;
+        match outcome {
+            StoreInterpretationOutput::Stored { .. } => Ok(CallToolResult::success(vec![content])),
+            StoreInterpretationOutput::Rejected { .. } => Ok(CallToolResult::error(vec![content])),
         }
     }
 }
