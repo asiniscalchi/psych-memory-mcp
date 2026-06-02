@@ -6,8 +6,19 @@ exposes **only explicit epistemic tools**. There is deliberately no generic
 `store_memory` / `save_memory` / `remember` tool: every memory must be stored
 through a typed, validated tool so its epistemic status is never ambiguous.
 
-Story 0 (this milestone) builds the skeleton and verifies the transport
-end-to-end. No epistemic tool is exposed yet — `store_fact` arrives in Story 1.
+## Tools
+
+| Tool | Purpose |
+|------|---------|
+| `store_journal_fact` | Store a journal-derived fact anchored to its raw Froid source excerpt. |
+
+`store_journal_fact` stores the verbatim `source_excerpt` as the memory content
+(not the normalized statement), records every fact as `epistemic_status:
+journal_reported`, and derives a deterministic, source-anchored `fact_id` (over
+`entry_id` + char offsets + `sha256(source_excerpt)`) that is emitted both in
+metadata and as a `fact_id:<id>` tag. The `fact_id` is intentionally stable
+across re-normalization and `fact_type` correction. Validation failures come
+back as structured tool errors (`{ ok: false, error_code, message }`).
 
 ## Architecture
 
