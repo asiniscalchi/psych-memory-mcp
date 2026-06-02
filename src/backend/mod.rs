@@ -1,0 +1,58 @@
+//! Backend adapter for the underlying memory-service.
+//!
+//! Everything the wrapper persists goes through the [`MemoryBackend`] trait.
+//! There are two implementations:
+//!
+//! * [`ReqwestMemoryBackend`] — the real adapter, speaking the mcp-memory-service
+//!   HTTP REST API (`POST /api/memories`, `GET /api/memories/{content_hash}`,
+//!   `GET /api/health`).
+//! * [`FakeMemoryBackend`] — an in-memory double used by unit tests so behaviour
+//!   can be verified without a running service.
+//!
+//! Keeping both behind one trait is what lets Story 0 prove the real transport
+//! once (the `#[ignore]`d round-trip integration test) while everything else is
+//! tested against the fake.
+
+mod fake;
+mod reqwest_backend;
+
+pub use fake::FakeMemoryBackend;
+pub use reqwest_backend::ReqwestMemoryBackend;
+
+use crate::errors::PsychMemoryError;
+use async_trait::async_trait;
+
+/// A memory as returned by the backend.
+///
+/// The memory-service identifies records by `content_hash` (a SHA-256 of the
+/// content), so that doubles as the stable id the wrapper hands back to callers
+/// and that future epistemic links (Story 2's `supported_by`) point at.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemoryRecord {
+    pub content: String,
+    pub memory_type: String,
+    pub tags: Vec<String>,
+    pub content_hash: String,
+    pub metadata: serde_json::Value,
+}
+
+#[async_trait]
+pub trait MemoryBackend: Send + Sync {
+    /// Store a memory and return its `content_hash`.
+    async fn store_memory(
+        &self,
+        content: String,
+        memory_type: String,
+        tags: Vec<String>,
+        metadata: serde_json::Value,
+    ) -> Result<String, PsychMemoryError>;
+
+    /// Fetch a memory by `content_hash`. Returns `None` if it does not exist.
+    async fn get_memory(
+        &self,
+        content_hash: &str,
+    ) -> Result<Option<MemoryRecord>, PsychMemoryError>;
+
+    /// Liveness/readiness check against the backend.
+    async fn health(&self) -> Result<(), PsychMemoryError>;
+}
