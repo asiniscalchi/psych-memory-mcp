@@ -5,9 +5,11 @@ use chrono::NaiveDate;
 use crate::errors::ValidationError;
 use crate::model::interpretation::{HIGH_CONFIDENCE_THRESHOLD, MIN_FACTS_FOR_HIGH_CONFIDENCE};
 use crate::model::{
-    InterpretationStatus, StoreInterpretationInput, StoreJournalFactInput, ValidatedInterpretation,
-    ValidatedJournalFact,
+    InterpretationStatus, RecordPatternOccurrenceInput, StoreInterpretationInput,
+    StoreJournalFactInput, ValidatedInterpretation, ValidatedJournalFact,
+    ValidatedPatternOccurrence,
 };
+use crate::pattern_validation::has_identity_claim;
 
 /// True iff `s` is a strict `YYYY-MM-DD` calendar date.
 ///
@@ -145,6 +147,65 @@ pub fn validate_store_interpretation(
         confidence: input.confidence,
         falsification_question: input.falsification_question.clone(),
         review_due: input.review_due.clone(),
+    })
+}
+
+/// Validate a `record_pattern_occurrence` input's shape and scalar fields.
+/// Existence of the referenced pattern/facts/interpretations is checked
+/// separately by the resolvers.
+pub fn validate_record_pattern_occurrence(
+    input: &RecordPatternOccurrenceInput,
+) -> Result<ValidatedPatternOccurrence, ValidationError> {
+    if input.pattern_id.trim().is_empty() {
+        return Err(ValidationError::MissingPatternId);
+    }
+
+    if input.fact_ids.is_empty() {
+        return Err(ValidationError::MissingSupportingFacts);
+    }
+    if input.fact_ids.iter().any(|id| id.trim().is_empty()) {
+        return Err(ValidationError::EmptySupportingFactId);
+    }
+    if input
+        .interpretation_ids
+        .iter()
+        .any(|id| id.trim().is_empty())
+    {
+        return Err(ValidationError::EmptyInterpretationId);
+    }
+
+    if !is_yyyy_mm_dd(&input.occurrence_date) {
+        return Err(ValidationError::InvalidOccurrenceDate);
+    }
+
+    if input.summary.trim().is_empty() {
+        return Err(ValidationError::EmptyOccurrenceSummary);
+    }
+    if has_identity_claim(&input.summary) {
+        return Err(ValidationError::OccurrenceIdentityClaim);
+    }
+
+    if !input.confidence.is_finite() || !(0.0..=1.0).contains(&input.confidence) {
+        return Err(ValidationError::InvalidConfidence);
+    }
+    if let Some(intensity) = input.intensity {
+        if !intensity.is_finite() || !(0.0..=1.0).contains(&intensity) {
+            return Err(ValidationError::InvalidIntensity);
+        }
+        if input.phase.is_not_activated() && intensity > 0.0 {
+            return Err(ValidationError::InvalidNotActivatedIntensity);
+        }
+    }
+
+    Ok(ValidatedPatternOccurrence {
+        pattern_id: input.pattern_id.clone(),
+        fact_ids: canonicalize_fact_ids(&input.fact_ids),
+        interpretation_ids: canonicalize_fact_ids(&input.interpretation_ids),
+        occurrence_date: input.occurrence_date.clone(),
+        phase: input.phase,
+        summary: input.summary.clone(),
+        confidence: input.confidence,
+        intensity: input.intensity,
     })
 }
 
@@ -367,6 +428,159 @@ mod interpretation_tests {
         assert_eq!(
             v.supported_by_fact_ids,
             vec!["fact_a".to_string(), "fact_c".to_string()]
+        );
+    }
+}
+
+#[cfg(test)]
+mod occurrence_tests {
+    use super::*;
+    use crate::model::OccurrencePhase;
+
+    fn valid() -> RecordPatternOccurrenceInput {
+        RecordPatternOccurrenceInput {
+            pattern_id: "pattern_savior".into(),
+            fact_ids: vec!["fact_a".into()],
+            interpretation_ids: vec![],
+            occurrence_date: "2026-06-01".into(),
+            phase: OccurrencePhase::RecognizedBeforeAction,
+            summary: "The rescue impulse appeared but was noticed before being acted out.".into(),
+            confidence: 0.55,
+            intensity: Some(0.45),
+        }
+    }
+
+    fn code(i: &RecordPatternOccurrenceInput) -> &'static str {
+        validate_record_pattern_occurrence(i)
+            .unwrap_err()
+            .error_code()
+    }
+
+    #[test]
+    fn accepts_valid_occurrence() {
+        assert!(validate_record_pattern_occurrence(&valid()).is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_pattern_id() {
+        let mut i = valid();
+        i.pattern_id = " ".into();
+        assert_eq!(code(&i), "missing_pattern_id");
+    }
+
+    #[test]
+    fn rejects_missing_fact_ids() {
+        let mut i = valid();
+        i.fact_ids = vec![];
+        assert_eq!(code(&i), "missing_supporting_facts");
+    }
+
+    #[test]
+    fn rejects_empty_fact_id() {
+        let mut i = valid();
+        i.fact_ids = vec!["fact_a".into(), " ".into()];
+        assert_eq!(code(&i), "empty_supporting_fact_id");
+    }
+
+    #[test]
+    fn rejects_empty_interpretation_id() {
+        let mut i = valid();
+        i.interpretation_ids = vec!["".into()];
+        assert_eq!(code(&i), "empty_interpretation_id");
+    }
+
+    #[test]
+    fn rejects_invalid_occurrence_date() {
+        let mut i = valid();
+        i.occurrence_date = "banana".into();
+        assert_eq!(code(&i), "invalid_occurrence_date");
+    }
+
+    #[test]
+    fn rejects_empty_summary() {
+        let mut i = valid();
+        i.summary = "  ".into();
+        assert_eq!(code(&i), "empty_occurrence_summary");
+    }
+
+    #[test]
+    fn rejects_identity_claim_in_summary() {
+        let mut i = valid();
+        i.summary = "Ale has the Savior pattern.".into();
+        assert_eq!(code(&i), "occurrence_identity_claim");
+    }
+
+    #[test]
+    fn does_not_reject_scale_is() {
+        let mut i = valid();
+        i.summary = "The urgency scale is high in this episode.".into();
+        assert!(validate_record_pattern_occurrence(&i).is_ok());
+    }
+
+    #[test]
+    fn rejects_invalid_confidence_above_one() {
+        let mut i = valid();
+        i.confidence = 1.5;
+        assert_eq!(code(&i), "invalid_confidence");
+    }
+
+    #[test]
+    fn rejects_invalid_confidence_nan_or_infinite() {
+        let mut i = valid();
+        i.confidence = f32::NAN;
+        assert_eq!(code(&i), "invalid_confidence");
+        i.confidence = f32::INFINITY;
+        assert_eq!(code(&i), "invalid_confidence");
+    }
+
+    #[test]
+    fn rejects_invalid_intensity_above_one() {
+        let mut i = valid();
+        i.intensity = Some(1.5);
+        assert_eq!(code(&i), "invalid_intensity");
+    }
+
+    #[test]
+    fn rejects_invalid_intensity_nan_or_infinite() {
+        let mut i = valid();
+        i.intensity = Some(f32::NAN);
+        assert_eq!(code(&i), "invalid_intensity");
+    }
+
+    #[test]
+    fn rejects_not_activated_with_positive_intensity() {
+        let mut i = valid();
+        i.phase = OccurrencePhase::NotActivated;
+        i.intensity = Some(0.4);
+        assert_eq!(code(&i), "invalid_not_activated_intensity");
+    }
+
+    #[test]
+    fn accepts_not_activated_with_zero_intensity() {
+        let mut i = valid();
+        i.phase = OccurrencePhase::NotActivated;
+        i.intensity = Some(0.0);
+        assert!(validate_record_pattern_occurrence(&i).is_ok());
+    }
+
+    #[test]
+    fn accepts_not_activated_with_omitted_intensity() {
+        let mut i = valid();
+        i.phase = OccurrencePhase::NotActivated;
+        i.intensity = None;
+        assert!(validate_record_pattern_occurrence(&i).is_ok());
+    }
+
+    #[test]
+    fn canonicalizes_fact_and_interpretation_ids() {
+        let mut i = valid();
+        i.fact_ids = vec!["fact_c".into(), "fact_a".into(), "fact_c".into()];
+        i.interpretation_ids = vec!["interp_b".into(), "interp_a".into()];
+        let v = validate_record_pattern_occurrence(&i).unwrap();
+        assert_eq!(v.fact_ids, vec!["fact_a".to_string(), "fact_c".to_string()]);
+        assert_eq!(
+            v.interpretation_ids,
+            vec!["interp_a".to_string(), "interp_b".to_string()]
         );
     }
 }

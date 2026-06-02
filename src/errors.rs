@@ -93,6 +93,22 @@ pub enum ValidationError {
     InvalidInterpretation,
     #[error("Resolved interpretation metadata.interpretation_id does not match the requested interpretation_id.")]
     InterpretationIdMismatch,
+
+    // --- Pattern occurrence (Story 4) ---
+    #[error("Pattern occurrence requires a pattern_id.")]
+    MissingPatternId,
+    #[error("pattern_id could not be resolved to an existing PatternSeed.")]
+    UnknownPatternSeed,
+    #[error("occurrence_date must be YYYY-MM-DD.")]
+    InvalidOccurrenceDate,
+    #[error("Pattern occurrence requires a summary.")]
+    EmptyOccurrenceSummary,
+    #[error("Pattern occurrence must describe an episode, not claim that the user has or is the pattern.")]
+    OccurrenceIdentityClaim,
+    #[error("intensity must be finite and between 0.0 and 1.0 when provided.")]
+    InvalidIntensity,
+    #[error("phase = not_activated requires intensity to be omitted or 0.0.")]
+    InvalidNotActivatedIntensity,
 }
 
 impl ValidationError {
@@ -137,6 +153,13 @@ impl ValidationError {
             ValidationError::AmbiguousInterpretation => "ambiguous_interpretation",
             ValidationError::InvalidInterpretation => "invalid_interpretation",
             ValidationError::InterpretationIdMismatch => "interpretation_id_mismatch",
+            ValidationError::MissingPatternId => "missing_pattern_id",
+            ValidationError::UnknownPatternSeed => "unknown_pattern_seed",
+            ValidationError::InvalidOccurrenceDate => "invalid_occurrence_date",
+            ValidationError::EmptyOccurrenceSummary => "empty_occurrence_summary",
+            ValidationError::OccurrenceIdentityClaim => "occurrence_identity_claim",
+            ValidationError::InvalidIntensity => "invalid_intensity",
+            ValidationError::InvalidNotActivatedIntensity => "invalid_not_activated_intensity",
         }
     }
 }
