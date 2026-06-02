@@ -8,6 +8,7 @@
 use crate::backend::{MemoryBackend, MemoryRecord};
 use crate::errors::{PsychMemoryError, ValidationError};
 use crate::model::journal_fact::SCHEMA_VERSION as FACT_SCHEMA_VERSION;
+use crate::model::pattern_seed::SCHEMA_VERSION as PATTERN_SCHEMA_VERSION;
 
 fn has_tag(memory: &MemoryRecord, tag: &str) -> bool {
     memory.tags.iter().any(|t| t == tag)
@@ -69,6 +70,63 @@ pub async fn resolve_supporting_facts(
     }
 
     Ok(resolved)
+}
+
+/// Outcome of looking up an existing pattern seed by `pattern_id`.
+#[derive(Debug)]
+pub enum PatternSeedLookup {
+    /// No memory carries this `pattern_id` tag.
+    NotFound,
+    /// Exactly one valid pattern seed exists.
+    Found(MemoryRecord),
+    /// More than one valid pattern seed exists for this id.
+    Ambiguous(Vec<MemoryRecord>),
+    /// Memories carry the tag but none are valid pattern seeds.
+    InvalidMatch(Vec<MemoryRecord>),
+}
+
+/// True if `memory` is structurally a valid pattern seed for `pattern_id`,
+/// including the mandatory `metadata.pattern_id` exact-equality guard.
+fn is_valid_pattern_seed(memory: &MemoryRecord, pattern_id: &str) -> bool {
+    let pattern_id_tag = format!("pattern_id:{pattern_id}");
+    let structural = memory.memory_type == "pattern_seed"
+        && has_tag(memory, "epistemic:pattern_seed")
+        && has_tag(memory, "status:seed")
+        && has_tag(memory, &pattern_id_tag);
+    let metadata_id_ok =
+        memory.metadata.get("pattern_id").and_then(|v| v.as_str()) == Some(pattern_id);
+    let schema_ok = memory
+        .metadata
+        .get("schema_version")
+        .and_then(|v| v.as_str())
+        == Some(PATTERN_SCHEMA_VERSION);
+    structural && metadata_id_ok && schema_ok
+}
+
+/// Resolve an existing pattern seed by its `pattern_id` (idempotency check).
+///
+/// Mixed valid + invalid matches resolve to `Found` (a single valid seed stays
+/// usable even if unrelated corrupt/colliding records exist); only when there
+/// are matches but *none* are valid do we report `InvalidMatch`.
+pub async fn resolve_pattern_seed_by_pattern_id(
+    backend: &dyn MemoryBackend,
+    pattern_id: &str,
+) -> Result<PatternSeedLookup, PsychMemoryError> {
+    let tag = format!("pattern_id:{pattern_id}");
+    let matches = backend.find_memories_by_tag(&tag).await?;
+    if matches.is_empty() {
+        return Ok(PatternSeedLookup::NotFound);
+    }
+
+    let (mut valid, invalid): (Vec<MemoryRecord>, Vec<MemoryRecord>) = matches
+        .into_iter()
+        .partition(|m| is_valid_pattern_seed(m, pattern_id));
+
+    Ok(match valid.len() {
+        0 => PatternSeedLookup::InvalidMatch(invalid),
+        1 => PatternSeedLookup::Found(valid.remove(0)),
+        _ => PatternSeedLookup::Ambiguous(valid),
+    })
 }
 
 #[cfg(test)]
@@ -188,5 +246,103 @@ mod tests {
             err,
             PsychMemoryError::Validation(ValidationError::InvalidSupportingFact)
         ));
+    }
+}
+
+#[cfg(test)]
+mod pattern_lookup_tests {
+    use super::*;
+    use crate::backend::FakeMemoryBackend;
+    use crate::model::StoreMemoryRequest;
+    use serde_json::json;
+
+    fn seed_request(pattern_id: &str, content: &str) -> StoreMemoryRequest {
+        StoreMemoryRequest {
+            content: content.to_string(),
+            memory_type: "pattern_seed".into(),
+            tags: vec![
+                "epistemic:pattern_seed".into(),
+                "epistemic_status:observation_category".into(),
+                "status:seed".into(),
+                format!("pattern_id:{pattern_id}"),
+            ],
+            metadata: json!({
+                "pattern_id": pattern_id,
+                "schema_version": PATTERN_SCHEMA_VERSION,
+            }),
+        }
+    }
+
+    async fn store(backend: &FakeMemoryBackend, req: StoreMemoryRequest) {
+        backend.store_memory(req).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn returns_not_found_when_no_pattern_seed_exists() {
+        let backend = FakeMemoryBackend::new();
+        let r = resolve_pattern_seed_by_pattern_id(&backend, "pattern_savior")
+            .await
+            .unwrap();
+        assert!(matches!(r, PatternSeedLookup::NotFound));
+    }
+
+    #[tokio::test]
+    async fn returns_found_when_one_valid_pattern_seed_exists() {
+        let backend = FakeMemoryBackend::new();
+        store(&backend, seed_request("pattern_savior", "Savior — desc")).await;
+        let r = resolve_pattern_seed_by_pattern_id(&backend, "pattern_savior")
+            .await
+            .unwrap();
+        assert!(matches!(r, PatternSeedLookup::Found(_)));
+    }
+
+    #[tokio::test]
+    async fn more_than_one_valid_pattern_match_returns_ambiguous() {
+        let backend = FakeMemoryBackend::new();
+        store(&backend, seed_request("pattern_savior", "Savior — one")).await;
+        store(&backend, seed_request("pattern_savior", "Savior — two")).await;
+        let r = resolve_pattern_seed_by_pattern_id(&backend, "pattern_savior")
+            .await
+            .unwrap();
+        assert!(matches!(r, PatternSeedLookup::Ambiguous(v) if v.len() == 2));
+    }
+
+    #[tokio::test]
+    async fn all_invalid_pattern_matches_returns_invalid_match() {
+        let backend = FakeMemoryBackend::new();
+        // Carries the tag but is not a pattern_seed memory type.
+        let mut bad = seed_request("pattern_savior", "tampered");
+        bad.memory_type = "fact".into();
+        store(&backend, bad).await;
+        let r = resolve_pattern_seed_by_pattern_id(&backend, "pattern_savior")
+            .await
+            .unwrap();
+        assert!(matches!(r, PatternSeedLookup::InvalidMatch(v) if v.len() == 1));
+    }
+
+    #[tokio::test]
+    async fn invalid_when_metadata_pattern_id_mismatch() {
+        let backend = FakeMemoryBackend::new();
+        let mut bad = seed_request("pattern_savior", "x");
+        bad.metadata =
+            json!({ "pattern_id": "pattern_OTHER", "schema_version": PATTERN_SCHEMA_VERSION });
+        store(&backend, bad).await;
+        let r = resolve_pattern_seed_by_pattern_id(&backend, "pattern_savior")
+            .await
+            .unwrap();
+        assert!(matches!(r, PatternSeedLookup::InvalidMatch(_)));
+    }
+
+    #[tokio::test]
+    async fn mixed_valid_and_invalid_pattern_matches_returns_found() {
+        let backend = FakeMemoryBackend::new();
+        store(&backend, seed_request("pattern_savior", "Savior — valid")).await;
+        let mut bad = seed_request("pattern_savior", "corrupt");
+        bad.memory_type = "observation".into();
+        store(&backend, bad).await;
+        let r = resolve_pattern_seed_by_pattern_id(&backend, "pattern_savior")
+            .await
+            .unwrap();
+        assert!(matches!(r, PatternSeedLookup::Found(_)));
     }
 }

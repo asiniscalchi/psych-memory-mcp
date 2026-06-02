@@ -13,16 +13,21 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler};
 
 use crate::backend::MemoryBackend;
 use crate::errors::{PsychMemoryError, ValidationError};
-use crate::evidence::resolve_supporting_facts;
+use crate::evidence::{
+    resolve_pattern_seed_by_pattern_id, resolve_supporting_facts, PatternSeedLookup,
+};
 use crate::fact_id::generate_fact_id;
 use crate::interpretation_id::generate_interpretation_id;
 use crate::mapping::{
-    map_store_interpretation_to_backend_request, map_store_journal_fact_to_backend_request,
+    map_create_pattern_seed_to_backend_request, map_store_interpretation_to_backend_request,
+    map_store_journal_fact_to_backend_request,
 };
 use crate::model::{
-    StoreInterpretationInput, StoreInterpretationOutput, StoreJournalFactInput,
-    StoreJournalFactOutput,
+    CreatePatternSeedInput, CreatePatternSeedOutput, StoreInterpretationInput,
+    StoreInterpretationOutput, StoreJournalFactInput, StoreJournalFactOutput,
 };
+use crate::pattern_id::generate_pattern_id;
+use crate::pattern_validation::validate_create_pattern_seed;
 use crate::validators::{validate_store_interpretation, validate_store_journal_fact};
 
 #[derive(Clone)]
@@ -104,10 +109,58 @@ impl PsychMemoryServer {
             status: "stored".to_string(),
         })
     }
+
+    /// The `create_pattern_seed` flow, independent of the MCP envelope.
+    ///
+    /// Idempotent by `pattern_id`: an existing valid seed returns
+    /// `AlreadyExists` without storing; ambiguous or all-invalid matches become
+    /// structured rejections. Only backend failures propagate as `Err`.
+    pub async fn create_pattern_seed_flow(
+        &self,
+        input: CreatePatternSeedInput,
+    ) -> Result<CreatePatternSeedOutput, PsychMemoryError> {
+        let validated = match validate_create_pattern_seed(&input) {
+            Ok(v) => v,
+            Err(err) => return Ok(rejected_pattern(&err)),
+        };
+
+        let pattern_id = generate_pattern_id(&validated);
+
+        match resolve_pattern_seed_by_pattern_id(self.backend.as_ref(), &pattern_id).await? {
+            PatternSeedLookup::NotFound => {}
+            PatternSeedLookup::Found(existing) => {
+                return Ok(CreatePatternSeedOutput::AlreadyExists {
+                    pattern_id,
+                    backend_memory_id: Some(existing.content_hash),
+                });
+            }
+            PatternSeedLookup::Ambiguous(_) => {
+                return Ok(rejected_pattern(&ValidationError::AmbiguousPatternSeed));
+            }
+            PatternSeedLookup::InvalidMatch(_) => {
+                return Ok(rejected_pattern(&ValidationError::InvalidPatternSeedMatch));
+            }
+        }
+
+        let request = map_create_pattern_seed_to_backend_request(&validated, &pattern_id);
+        let stored = self.backend.store_memory(request).await?;
+
+        Ok(CreatePatternSeedOutput::Stored {
+            pattern_id,
+            backend_memory_id: Some(stored.backend_memory_id),
+        })
+    }
 }
 
 fn rejected_interpretation(err: &ValidationError) -> StoreInterpretationOutput {
     StoreInterpretationOutput::Rejected {
+        error_code: err.error_code().to_string(),
+        message: err.to_string(),
+    }
+}
+
+fn rejected_pattern(err: &ValidationError) -> CreatePatternSeedOutput {
+    CreatePatternSeedOutput::Rejected {
         error_code: err.error_code().to_string(),
         message: err.to_string(),
     }
@@ -160,6 +213,33 @@ impl PsychMemoryServer {
         match outcome {
             StoreInterpretationOutput::Stored { .. } => Ok(CallToolResult::success(vec![content])),
             StoreInterpretationOutput::Rejected { .. } => Ok(CallToolResult::error(vec![content])),
+        }
+    }
+
+    #[tool(
+        description = "Create a named pattern seed: an observation category for a recurring \
+                       dynamic (e.g. 'hunger as discharge'). Provide name, a slug \
+                       (^[a-z][a-z0-9_]*$), description, markers, and counter_markers. A seed is \
+                       only a category to observe — it does NOT claim the pattern is active or \
+                       that the user has it. Idempotent by slug."
+    )]
+    async fn create_pattern_seed(
+        &self,
+        Parameters(input): Parameters<CreatePatternSeedInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let outcome = self
+            .create_pattern_seed_flow(input)
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("backend store failed: {e}"), None))?;
+
+        let content = Content::json(&outcome)?;
+        match outcome {
+            // Stored and AlreadyExists are both successful (ok:true) outcomes.
+            CreatePatternSeedOutput::Stored { .. }
+            | CreatePatternSeedOutput::AlreadyExists { .. } => {
+                Ok(CallToolResult::success(vec![content]))
+            }
+            CreatePatternSeedOutput::Rejected { .. } => Ok(CallToolResult::error(vec![content])),
         }
     }
 }

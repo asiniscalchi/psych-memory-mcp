@@ -19,8 +19,13 @@ use crate::model::interpretation::{
     SCHEMA_VERSION as INTERP_SCHEMA_VERSION,
 };
 use crate::model::journal_fact::{EPISTEMIC_STATUS, MEMORY_TYPE, SCHEMA_VERSION};
+use crate::model::pattern_seed::{
+    EPISTEMIC_STATUS as PATTERN_EPISTEMIC_STATUS, MEMORY_TYPE as PATTERN_MEMORY_TYPE,
+    SCHEMA_VERSION as PATTERN_SCHEMA_VERSION, STATUS as PATTERN_STATUS,
+};
 use crate::model::{
     InterpretationStatus, StoreMemoryRequest, ValidatedInterpretation, ValidatedJournalFact,
+    ValidatedPatternSeed,
 };
 
 /// Build the backend store request for a validated fact and its `fact_id`.
@@ -102,6 +107,47 @@ pub fn map_store_interpretation_to_backend_request(
     StoreMemoryRequest {
         content: interpretation.hypothesis.clone(),
         memory_type: INTERP_MEMORY_TYPE.to_string(),
+        tags,
+        metadata,
+    }
+}
+
+/// Build the backend store request for a validated pattern seed.
+///
+/// Content is `"<name> — <description>"` (natural language, no `PATTERN:`
+/// prefix and no activation/ownership claim). The record carries no
+/// occurrence/trend/intensity fields — a seed is only an observation category.
+pub fn map_create_pattern_seed_to_backend_request(
+    seed: &ValidatedPatternSeed,
+    pattern_id: &str,
+) -> StoreMemoryRequest {
+    let mut tags = vec![
+        "epistemic:pattern_seed".to_string(),
+        format!("epistemic_status:{PATTERN_EPISTEMIC_STATUS}"),
+        format!("status:{PATTERN_STATUS}"),
+        format!("pattern_id:{pattern_id}"),
+        format!("pattern_slug:{}", seed.slug),
+    ];
+    for alias in &seed.aliases {
+        tags.push(format!("pattern_alias:{alias}"));
+    }
+
+    let metadata = json!({
+        "pattern_id": pattern_id,
+        "name": seed.name,
+        "slug": seed.slug,
+        "description": seed.description,
+        "markers": seed.markers,
+        "counter_markers": seed.counter_markers,
+        "aliases": seed.aliases,
+        "epistemic_status": PATTERN_EPISTEMIC_STATUS,
+        "status": PATTERN_STATUS,
+        "schema_version": PATTERN_SCHEMA_VERSION,
+    });
+
+    StoreMemoryRequest {
+        content: format!("{} — {}", seed.name, seed.description),
+        memory_type: PATTERN_MEMORY_TYPE.to_string(),
         tags,
         metadata,
     }
@@ -274,5 +320,95 @@ mod interpretation_tests {
             mapped().metadata["schema_version"],
             "psych-memory.interpretation.v1"
         );
+    }
+}
+
+#[cfg(test)]
+mod pattern_seed_tests {
+    use super::*;
+
+    fn seed() -> ValidatedPatternSeed {
+        ValidatedPatternSeed {
+            name: "Savior".into(),
+            slug: "savior".into(),
+            description: "A tendency to feel urgency to rescue or fix the other person.".into(),
+            markers: vec!["urgency to intervene".into()],
+            counter_markers: vec!["ability to wait".into()],
+            aliases: vec!["rescuer".into(), "rescue_impulse".into()],
+        }
+    }
+
+    fn mapped() -> StoreMemoryRequest {
+        map_create_pattern_seed_to_backend_request(&seed(), "pattern_savior")
+    }
+
+    #[test]
+    fn maps_content_as_name_dash_description() {
+        let req = mapped();
+        assert_eq!(
+            req.content,
+            "Savior — A tendency to feel urgency to rescue or fix the other person."
+        );
+        assert_eq!(req.memory_type, "pattern_seed");
+    }
+
+    #[test]
+    fn maps_expected_tags() {
+        let req = mapped();
+        for tag in [
+            "epistemic:pattern_seed",
+            "epistemic_status:observation_category",
+            "status:seed",
+            "pattern_id:pattern_savior",
+            "pattern_slug:savior",
+        ] {
+            assert!(req.tags.iter().any(|t| t == tag), "missing tag {tag}");
+        }
+    }
+
+    #[test]
+    fn maps_alias_tags() {
+        let req = mapped();
+        assert!(req.tags.iter().any(|t| t == "pattern_alias:rescuer"));
+        assert!(req.tags.iter().any(|t| t == "pattern_alias:rescue_impulse"));
+    }
+
+    #[test]
+    fn maps_metadata_and_schema_version() {
+        let req = mapped();
+        assert_eq!(req.metadata["pattern_id"], "pattern_savior");
+        assert_eq!(req.metadata["name"], "Savior");
+        assert_eq!(req.metadata["slug"], "savior");
+        assert_eq!(
+            req.metadata["markers"],
+            serde_json::json!(["urgency to intervene"])
+        );
+        assert_eq!(req.metadata["status"], "seed");
+        assert_eq!(req.metadata["epistemic_status"], "observation_category");
+        assert_eq!(
+            req.metadata["schema_version"],
+            "psych-memory.pattern_seed.v1"
+        );
+    }
+
+    #[test]
+    fn does_not_map_activation_fields() {
+        let req = mapped();
+        for forbidden in [
+            "occurrence_count",
+            "intensity",
+            "trend",
+            "active_since",
+            "last_seen",
+        ] {
+            assert!(
+                req.metadata.get(forbidden).is_none(),
+                "metadata has {forbidden}"
+            );
+        }
+        for forbidden_tag in ["status:active", "active:true"] {
+            assert!(!req.tags.iter().any(|t| t == forbidden_tag));
+        }
+        assert!(!req.tags.iter().any(|t| t.starts_with("trend:")));
     }
 }
