@@ -109,6 +109,16 @@ pub enum ValidationError {
     InvalidIntensity,
     #[error("phase = not_activated requires intensity to be omitted or 0.0.")]
     InvalidNotActivatedIntensity,
+
+    // --- Pattern timeline query (Story 5) ---
+    #[error("date_from must be YYYY-MM-DD when provided.")]
+    InvalidDateFrom,
+    #[error("date_to must be YYYY-MM-DD when provided.")]
+    InvalidDateTo,
+    #[error("date_from must be less than or equal to date_to.")]
+    InvalidDateRange,
+    #[error("phases must not contain duplicates.")]
+    DuplicatePhaseFilter,
 }
 
 impl ValidationError {
@@ -160,6 +170,10 @@ impl ValidationError {
             ValidationError::OccurrenceIdentityClaim => "occurrence_identity_claim",
             ValidationError::InvalidIntensity => "invalid_intensity",
             ValidationError::InvalidNotActivatedIntensity => "invalid_not_activated_intensity",
+            ValidationError::InvalidDateFrom => "invalid_date_from",
+            ValidationError::InvalidDateTo => "invalid_date_to",
+            ValidationError::InvalidDateRange => "invalid_date_range",
+            ValidationError::DuplicatePhaseFilter => "duplicate_phase_filter",
         }
     }
 }

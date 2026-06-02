@@ -23,16 +23,19 @@ use crate::mapping::{
     map_store_interpretation_to_backend_request, map_store_journal_fact_to_backend_request,
 };
 use crate::model::{
-    CreatePatternSeedInput, CreatePatternSeedOutput, RecordPatternOccurrenceInput,
-    RecordPatternOccurrenceOutput, StoreInterpretationInput, StoreInterpretationOutput,
-    StoreJournalFactInput, StoreJournalFactOutput,
+    CreatePatternSeedInput, CreatePatternSeedOutput, QueryPatternTimelineInput,
+    QueryPatternTimelineOutput, RecordPatternOccurrenceInput, RecordPatternOccurrenceOutput,
+    StoreInterpretationInput, StoreInterpretationOutput, StoreJournalFactInput,
+    StoreJournalFactOutput,
 };
 use crate::occurrence_id::generate_occurrence_id;
 use crate::pattern_id::generate_pattern_id;
 use crate::pattern_validation::validate_create_pattern_seed;
 use crate::resolution::TypedLookup;
+use crate::timeline::build_pattern_timeline;
 use crate::validators::{
-    validate_record_pattern_occurrence, validate_store_interpretation, validate_store_journal_fact,
+    validate_query_pattern_timeline, validate_record_pattern_occurrence,
+    validate_store_interpretation, validate_store_journal_fact,
 };
 
 #[derive(Clone)]
@@ -210,6 +213,33 @@ impl PsychMemoryServer {
             status: "stored".to_string(),
         })
     }
+
+    /// The `query_pattern_timeline` flow, independent of the MCP envelope.
+    ///
+    /// Read-only: validate the query, do one `pattern_id` tag lookup, and build
+    /// a descriptive timeline. Never writes. Only a backend/transport failure
+    /// propagates as `Err`.
+    pub async fn query_pattern_timeline_flow(
+        &self,
+        input: QueryPatternTimelineInput,
+    ) -> Result<QueryPatternTimelineOutput, PsychMemoryError> {
+        let query = match validate_query_pattern_timeline(&input) {
+            Ok(q) => q,
+            Err(err) => {
+                return Ok(QueryPatternTimelineOutput::Rejected {
+                    error_code: err.error_code().to_string(),
+                    message: err.to_string(),
+                });
+            }
+        };
+
+        // One lookup: resolves the seed and finds occurrence candidates from the
+        // same snapshot. find_memories_by_tag exhausts pagination.
+        let tag = format!("pattern_id:{}", query.pattern_id);
+        let records = self.backend.find_memories_by_tag(&tag).await?;
+
+        Ok(build_pattern_timeline(records, &query))
+    }
 }
 
 /// Turn a list-resolver result into either a structured rejection (domain
@@ -348,6 +378,29 @@ impl PsychMemoryServer {
             RecordPatternOccurrenceOutput::Rejected { .. } => {
                 Ok(CallToolResult::error(vec![content]))
             }
+        }
+    }
+
+    #[tool(
+        description = "Retrieve the dated occurrences recorded for a pattern seed, grouped by \
+                       date. Read-only and descriptive: returns occurrences, per-phase counts, \
+                       and warnings about corrupt records. Optionally filter by date_from/date_to \
+                       (YYYY-MM-DD) and phases. It does NOT compute trend, decide whether the \
+                       pattern is active, or produce any psychological conclusion."
+    )]
+    async fn query_pattern_timeline(
+        &self,
+        Parameters(input): Parameters<QueryPatternTimelineInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let outcome = self
+            .query_pattern_timeline_flow(input)
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("backend query failed: {e}"), None))?;
+
+        let content = Content::json(&outcome)?;
+        match outcome {
+            QueryPatternTimelineOutput::Found { .. } => Ok(CallToolResult::success(vec![content])),
+            QueryPatternTimelineOutput::Rejected { .. } => Ok(CallToolResult::error(vec![content])),
         }
     }
 }

@@ -5,9 +5,9 @@ use chrono::NaiveDate;
 use crate::errors::ValidationError;
 use crate::model::interpretation::{HIGH_CONFIDENCE_THRESHOLD, MIN_FACTS_FOR_HIGH_CONFIDENCE};
 use crate::model::{
-    InterpretationStatus, RecordPatternOccurrenceInput, StoreInterpretationInput,
-    StoreJournalFactInput, ValidatedInterpretation, ValidatedJournalFact,
-    ValidatedPatternOccurrence,
+    InterpretationStatus, QueryPatternTimelineInput, RecordPatternOccurrenceInput,
+    StoreInterpretationInput, StoreJournalFactInput, ValidatedInterpretation, ValidatedJournalFact,
+    ValidatedPatternOccurrence, ValidatedPatternTimelineQuery,
 };
 use crate::pattern_validation::has_identity_claim;
 
@@ -15,7 +15,7 @@ use crate::pattern_validation::has_identity_claim;
 ///
 /// `NaiveDate::parse_from_str` alone is too lax (it accepts `2026-6-1`), so we
 /// also require the exact 4-2-2 zero-padded shape before checking validity.
-fn is_yyyy_mm_dd(s: &str) -> bool {
+pub(crate) fn is_yyyy_mm_dd(s: &str) -> bool {
     let bytes = s.as_bytes();
     if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
         return false;
@@ -206,6 +206,48 @@ pub fn validate_record_pattern_occurrence(
         summary: input.summary.clone(),
         confidence: input.confidence,
         intensity: input.intensity,
+    })
+}
+
+/// Validate a `query_pattern_timeline` input's shape (read-only). Resolution of
+/// the pattern itself happens later, against the backend.
+pub fn validate_query_pattern_timeline(
+    input: &QueryPatternTimelineInput,
+) -> Result<ValidatedPatternTimelineQuery, ValidationError> {
+    if input.pattern_id.trim().is_empty() {
+        return Err(ValidationError::MissingPatternId);
+    }
+    if let Some(date_from) = &input.date_from {
+        if !is_yyyy_mm_dd(date_from) {
+            return Err(ValidationError::InvalidDateFrom);
+        }
+    }
+    if let Some(date_to) = &input.date_to {
+        if !is_yyyy_mm_dd(date_to) {
+            return Err(ValidationError::InvalidDateTo);
+        }
+    }
+    // YYYY-MM-DD sorts lexically the same as chronologically.
+    if let (Some(from), Some(to)) = (&input.date_from, &input.date_to) {
+        if from > to {
+            return Err(ValidationError::InvalidDateRange);
+        }
+    }
+
+    let mut seen = Vec::new();
+    for phase in &input.phases {
+        if seen.contains(phase) {
+            return Err(ValidationError::DuplicatePhaseFilter);
+        }
+        seen.push(*phase);
+    }
+
+    Ok(ValidatedPatternTimelineQuery {
+        pattern_id: input.pattern_id.clone(),
+        date_from: input.date_from.clone(),
+        date_to: input.date_to.clone(),
+        phases: input.phases.clone(),
+        include_invalid_warnings: input.include_invalid_record_warnings.unwrap_or(true),
     })
 }
 
@@ -582,5 +624,84 @@ mod occurrence_tests {
             v.interpretation_ids,
             vec!["interp_a".to_string(), "interp_b".to_string()]
         );
+    }
+}
+
+#[cfg(test)]
+mod timeline_tests {
+    use super::*;
+    use crate::model::OccurrencePhase;
+
+    fn valid() -> QueryPatternTimelineInput {
+        QueryPatternTimelineInput {
+            pattern_id: "pattern_savior".into(),
+            date_from: None,
+            date_to: None,
+            phases: vec![],
+            include_invalid_record_warnings: None,
+        }
+    }
+
+    fn code(i: &QueryPatternTimelineInput) -> &'static str {
+        validate_query_pattern_timeline(i).unwrap_err().error_code()
+    }
+
+    #[test]
+    fn accepts_minimal_query() {
+        let v = validate_query_pattern_timeline(&valid()).unwrap();
+        assert!(v.include_invalid_warnings, "warnings default to true");
+    }
+
+    #[test]
+    fn accepts_valid_date_range_and_phase_filter() {
+        let mut i = valid();
+        i.date_from = Some("2026-06-01".into());
+        i.date_to = Some("2026-06-30".into());
+        i.phases = vec![OccurrencePhase::Activated, OccurrencePhase::NotActivated];
+        assert!(validate_query_pattern_timeline(&i).is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_pattern_id() {
+        let mut i = valid();
+        i.pattern_id = " ".into();
+        assert_eq!(code(&i), "missing_pattern_id");
+    }
+
+    #[test]
+    fn rejects_invalid_date_from() {
+        let mut i = valid();
+        i.date_from = Some("banana".into());
+        assert_eq!(code(&i), "invalid_date_from");
+    }
+
+    #[test]
+    fn rejects_invalid_date_to() {
+        let mut i = valid();
+        i.date_to = Some("banana".into());
+        assert_eq!(code(&i), "invalid_date_to");
+    }
+
+    #[test]
+    fn rejects_date_from_after_date_to() {
+        let mut i = valid();
+        i.date_from = Some("2026-06-30".into());
+        i.date_to = Some("2026-06-01".into());
+        assert_eq!(code(&i), "invalid_date_range");
+    }
+
+    #[test]
+    fn rejects_duplicate_phase_filter() {
+        let mut i = valid();
+        i.phases = vec![OccurrencePhase::Activated, OccurrencePhase::Activated];
+        assert_eq!(code(&i), "duplicate_phase_filter");
+    }
+
+    #[test]
+    fn include_invalid_record_warnings_false_is_respected() {
+        let mut i = valid();
+        i.include_invalid_record_warnings = Some(false);
+        let v = validate_query_pattern_timeline(&i).unwrap();
+        assert!(!v.include_invalid_warnings);
     }
 }
