@@ -13,6 +13,7 @@ through a typed, validated tool so its epistemic status is never ambiguous.
 | `store_journal_fact` | Store a journal-derived fact anchored to its raw Froid source excerpt. |
 | `store_interpretation` | Store a hypothesis grounded in one or more existing journal facts. |
 | `create_pattern_seed` | Create a named observation category for a recurring dynamic. |
+| `record_pattern_occurrence` | Record a dated occurrence of a pattern seed in one episode. |
 
 `store_journal_fact` stores the verbatim `source_excerpt` as the memory content
 (not the normalized statement), records every fact as `epistemic_status:
@@ -42,14 +43,32 @@ nothing (refined fields are **not** applied — updates are a future story).
 Records carry no `occurrence_count`/`trend`/`intensity` — activation requires
 future occurrence records.
 
+`record_pattern_occurrence` records a *concrete dated episode*
+(`epistemic_status: evidence_linked_occurrence`) of one pattern seed, grounded
+in at least one existing fact and optionally linked to existing
+interpretations. The pattern, every fact, and every interpretation are resolved
+(by their id tags, with mandatory `metadata.<id>` exact match) before anything
+is stored; the pattern seed is only read, never mutated. The deterministic
+`occurrence_id` is derived from pattern/date/phase/sorted-facts/sorted-interps/
+trimmed-summary (not confidence/intensity). It records a `phase` (activated,
+recognized_before_action, …, not_activated, transformed) and never writes
+`occurrence_count`/`trend`/activation fields — a single occurrence does not
+activate the pattern.
+
+All entity resolution (pattern seed, fact, interpretation) shares one
+filter-then-count resolver: a single valid record stays usable even amid
+corrupt/tag-colliding ones. This unifies — and intentionally changes — the
+earlier fact-lookup corner case (one valid fact + one corrupt match: previously
+`ambiguous_supporting_fact`, now resolves to the valid fact).
+
 Validation failures from any tool come back as structured tool errors
 (`{ ok: false, error_code, message }`).
 
 > **Known backend collision risk.** The memory-service keys records by
 > `content_hash = sha256(content)`. Because content is the raw excerpt (facts),
-> the hypothesis (interpretations), or `name — description` (pattern seeds), two
-> entries with byte-identical content but different evidence collapse to one
-> backend memory even though their
+> the hypothesis (interpretations), `name — description` (pattern seeds), or the
+> summary (occurrences), two entries with byte-identical content but different
+> evidence collapse to one backend memory even though their
 > wrapper ids differ — the last write wins. The wrapper ids, evidence tags, and
 > metadata are preserved per write, but resolving this backend-level dedup is
 > deferred to a later story.
@@ -85,11 +104,11 @@ The memory-service identifies records by **`content_hash`** (a SHA-256 of the
 content), which the wrapper uses as the stable memory id. Storing identical
 content is therefore idempotent.
 
-> **Note:** the `fact`, `interpretation`, and `pattern_seed` memory types are
-> not in the service's default ontology and are silently downgraded to
-> `observation` unless the service is started with
-> `MCP_CUSTOM_MEMORY_TYPES='{"fact": [], "interpretation": [], "pattern_seed": []}'`
-> (set in `docker-compose.yml`).
+> **Note:** the `fact`, `interpretation`, `pattern_seed`, and
+> `pattern_occurrence` memory types are not in the service's default ontology
+> and are silently downgraded to `observation` unless the service is started
+> with `MCP_CUSTOM_MEMORY_TYPES` registering all four (set in
+> `docker-compose.yml`).
 
 ## Configuration
 
