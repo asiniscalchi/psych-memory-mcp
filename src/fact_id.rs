@@ -7,23 +7,12 @@
 //! `fact_type` (may be corrected), `event_date`, and `content_hash`, so the id
 //! stays stable as those are refined.
 
-use sha2::{Digest, Sha256};
-
+use crate::hashing::sha256_hex;
 use crate::model::ValidatedJournalFact;
 
 /// Domain separator so this hashing scheme can evolve without colliding with
 /// other uses of SHA-256 in the system.
 const FACT_ID_DOMAIN: &str = "psych-memory.fact_id.v1";
-
-fn sha256_hex(input: &str) -> String {
-    let digest = Sha256::digest(input.as_bytes());
-    let mut hex = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        use std::fmt::Write;
-        let _ = write!(hex, "{byte:02x}");
-    }
-    hex
-}
 
 /// Generate the deterministic `fact_<sha256>` id for a validated journal fact.
 ///
