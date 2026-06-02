@@ -44,6 +44,31 @@ struct MemoryDto {
 struct ListResponse {
     #[serde(default)]
     memories: Vec<MemoryDto>,
+    #[serde(default)]
+    has_more: bool,
+}
+
+/// Accumulate every page of a paginated listing. `fetch(page)` returns that
+/// page's records and whether more pages follow; a fetch error aborts (no
+/// partial result). Stops on `has_more == false` or an empty page (guard
+/// against a backend that never clears `has_more`).
+async fn collect_all_pages<F, Fut>(mut fetch: F) -> Result<Vec<MemoryRecord>, PsychMemoryError>
+where
+    F: FnMut(u32) -> Fut,
+    Fut: std::future::Future<Output = Result<(Vec<MemoryRecord>, bool), PsychMemoryError>>,
+{
+    let mut all = Vec::new();
+    let mut page = 1u32;
+    loop {
+        let (records, has_more) = fetch(page).await?;
+        let empty = records.is_empty();
+        all.extend(records);
+        if !has_more || empty {
+            break;
+        }
+        page += 1;
+    }
+    Ok(all)
 }
 
 #[derive(Deserialize)]
@@ -61,6 +86,44 @@ impl ReqwestMemoryBackend {
 
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
+    }
+
+    /// Fetch one page of memories carrying `tag`, returning the page's records
+    /// and whether more pages follow.
+    async fn fetch_tag_page(
+        &self,
+        tag: &str,
+        page: u32,
+    ) -> Result<(Vec<MemoryRecord>, bool), PsychMemoryError> {
+        let page = page.to_string();
+        let resp = self
+            .client
+            .get(self.url("/api/memories"))
+            .query(&[("tag", tag), ("page", &page), ("page_size", "100")])
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(PsychMemoryError::BackendStatus(format!(
+                "list by tag returned {status}: {text}"
+            )));
+        }
+
+        let parsed: ListResponse = resp.json().await?;
+        let records = parsed
+            .memories
+            .into_iter()
+            .map(|dto| MemoryRecord {
+                content: dto.content,
+                memory_type: dto.memory_type,
+                tags: dto.tags,
+                content_hash: dto.content_hash,
+                metadata: dto.metadata,
+            })
+            .collect();
+        Ok((records, parsed.has_more))
     }
 }
 
@@ -135,36 +198,9 @@ impl MemoryBackend for ReqwestMemoryBackend {
     }
 
     async fn find_memories_by_tag(&self, tag: &str) -> Result<Vec<MemoryRecord>, PsychMemoryError> {
-        // page_size is capped at 100 by the service; an exact id-tag yields at
-        // most one match, so a single page is sufficient. reqwest URL-encodes
-        // the `:` in the tag value.
-        let resp = self
-            .client
-            .get(self.url("/api/memories"))
-            .query(&[("tag", tag), ("page_size", "100")])
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(PsychMemoryError::BackendStatus(format!(
-                "list by tag returned {status}: {text}"
-            )));
-        }
-
-        let parsed: ListResponse = resp.json().await?;
-        Ok(parsed
-            .memories
-            .into_iter()
-            .map(|dto| MemoryRecord {
-                content: dto.content,
-                memory_type: dto.memory_type,
-                tags: dto.tags,
-                content_hash: dto.content_hash,
-                metadata: dto.metadata,
-            })
-            .collect())
+        // A tag may be non-unique (e.g. pattern_id:<id> matches many
+        // occurrences), so exhaust every page — never silently truncate.
+        collect_all_pages(|page| self.fetch_tag_page(tag, page)).await
     }
 
     async fn health(&self) -> Result<(), PsychMemoryError> {
@@ -183,5 +219,76 @@ impl MemoryBackend for ReqwestMemoryBackend {
             )));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod pagination_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    fn rec(id: &str) -> MemoryRecord {
+        MemoryRecord {
+            content: id.into(),
+            memory_type: "x".into(),
+            tags: vec![],
+            content_hash: id.into(),
+            metadata: serde_json::Value::Null,
+        }
+    }
+
+    #[tokio::test]
+    async fn find_memories_by_tag_fetches_all_pages() {
+        let out = collect_all_pages(|page| async move {
+            match page {
+                1 => Ok((vec![rec("a"), rec("b")], true)),
+                2 => Ok((vec![rec("c")], false)),
+                _ => panic!("requested page {page}"),
+            }
+        })
+        .await
+        .unwrap();
+        let ids: Vec<String> = out.into_iter().map(|r| r.content).collect();
+        assert_eq!(ids, vec!["a", "b", "c"]);
+    }
+
+    #[tokio::test]
+    async fn find_memories_by_tag_returns_empty_when_no_pages() {
+        let out = collect_all_pages(|_page| async move { Ok((vec![], false)) })
+            .await
+            .unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn find_memories_by_tag_errors_if_second_page_fails() {
+        let result = collect_all_pages(|page| async move {
+            match page {
+                1 => Ok((vec![rec("a")], true)),
+                _ => Err(PsychMemoryError::Backend("page 2 failed".into())),
+            }
+        })
+        .await;
+        assert!(matches!(result, Err(PsychMemoryError::Backend(_))));
+    }
+
+    #[tokio::test]
+    async fn stops_if_backend_never_clears_has_more() {
+        // has_more stuck true but an empty page must still terminate the loop.
+        let pages = RefCell::new(0u32);
+        let out = collect_all_pages(|page| {
+            *pages.borrow_mut() = page;
+            async move {
+                if page == 1 {
+                    Ok((vec![rec("a")], true))
+                } else {
+                    Ok((vec![], true)) // empty but has_more still true
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(*pages.borrow(), 2);
     }
 }

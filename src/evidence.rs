@@ -50,7 +50,7 @@ fn fact_invalid_error(records: &[MemoryRecord], fact_id: &str) -> ValidationErro
 
 // --- Pattern seed ---
 
-fn is_valid_pattern_seed(memory: &MemoryRecord, pattern_id: &str) -> bool {
+pub(crate) fn is_valid_pattern_seed(memory: &MemoryRecord, pattern_id: &str) -> bool {
     memory.memory_type == "pattern_seed"
         && has_tag(memory, "epistemic:pattern_seed")
         && has_tag(memory, "status:seed")

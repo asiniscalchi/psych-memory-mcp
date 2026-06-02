@@ -14,6 +14,7 @@ through a typed, validated tool so its epistemic status is never ambiguous.
 | `store_interpretation` | Store a hypothesis grounded in one or more existing journal facts. |
 | `create_pattern_seed` | Create a named observation category for a recurring dynamic. |
 | `record_pattern_occurrence` | Record a dated occurrence of a pattern seed in one episode. |
+| `query_pattern_timeline` | Read-only: list a pattern's occurrences over time, grouped by date. |
 
 `store_journal_fact` stores the verbatim `source_excerpt` as the memory content
 (not the normalized statement), records every fact as `epistemic_status:
@@ -60,6 +61,17 @@ filter-then-count resolver: a single valid record stays usable even amid
 corrupt/tag-colliding ones. This unifies — and intentionally changes — the
 earlier fact-lookup corner case (one valid fact + one corrupt match: previously
 `ambiguous_supporting_fact`, now resolves to the valid fact).
+
+`query_pattern_timeline` is the first **read-only** tool: given a `pattern_id`
+it does a single (fully paginated) `pattern_id:<id>` lookup, resolves the seed
+and validates the occurrence records from the same snapshot, then deduplicates
+by `occurrence_id`, applies optional date/phase filters, sorts (date, phase,
+`occurrence_id`), groups by date, and returns per-phase counts plus warnings for
+corrupt/duplicate records. `total_occurrences` and `phase_counts` are
+**post-filter, post-dedup** — descriptive only. It never writes, never computes
+trend, and never decides whether a pattern is "active". Tag lookups exhaust
+backend pagination so a pattern with many occurrences is never silently
+truncated.
 
 Validation failures from any tool come back as structured tool errors
 (`{ ok: false, error_code, message }`).

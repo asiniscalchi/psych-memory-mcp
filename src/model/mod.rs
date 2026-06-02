@@ -5,6 +5,7 @@ pub mod interpretation;
 pub mod journal_fact;
 pub mod pattern_occurrence;
 pub mod pattern_seed;
+pub mod pattern_timeline;
 
 pub use backend_request::{BackendStoreResult, StoreMemoryRequest};
 pub use interpretation::{
@@ -19,3 +20,6 @@ pub use pattern_occurrence::{
     ValidatedPatternOccurrence,
 };
 pub use pattern_seed::{CreatePatternSeedInput, CreatePatternSeedOutput, ValidatedPatternSeed};
+pub use pattern_timeline::{
+    QueryPatternTimelineInput, QueryPatternTimelineOutput, ValidatedPatternTimelineQuery,
+};

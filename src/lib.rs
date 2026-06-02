@@ -17,4 +17,5 @@ pub mod pattern_id;
 pub mod pattern_validation;
 pub mod resolution;
 pub mod server;
+pub mod timeline;
 pub mod validators;
