@@ -11,14 +11,35 @@ through a typed, validated tool so its epistemic status is never ambiguous.
 | Tool | Purpose |
 |------|---------|
 | `store_journal_fact` | Store a journal-derived fact anchored to its raw Froid source excerpt. |
+| `store_interpretation` | Store a hypothesis grounded in one or more existing journal facts. |
 
 `store_journal_fact` stores the verbatim `source_excerpt` as the memory content
 (not the normalized statement), records every fact as `epistemic_status:
 journal_reported`, and derives a deterministic, source-anchored `fact_id` (over
 `entry_id` + char offsets + `sha256(source_excerpt)`) that is emitted both in
 metadata and as a `fact_id:<id>` tag. The `fact_id` is intentionally stable
-across re-normalization and `fact_type` correction. Validation failures come
-back as structured tool errors (`{ ok: false, error_code, message }`).
+across re-normalization and `fact_type` correction.
+
+`store_interpretation` stores a falsifiable hypothesis (`epistemic_status:
+hypothesis`) that must reference at least one existing fact. Each
+`supported_by_fact_id` is resolved via the `fact_id:<id>` tag and verified
+against the fact's `metadata.fact_id`; unknown, ambiguous, or non-fact
+references are rejected and nothing is stored. The deterministic
+`interpretation_id` is derived from the hypothesis, type, and sorted supporting
+`fact_id`s (not from confidence/status/review fields), and is emitted as both
+metadata and an `interpretation_id:<id>` tag, with one `supported_by:<fact_id>`
+tag per fact. Only `status: candidate` is accepted in this milestone.
+
+Validation failures from either tool come back as structured tool errors
+(`{ ok: false, error_code, message }`).
+
+> **Known backend collision risk.** The memory-service keys records by
+> `content_hash = sha256(content)`. Because content is the raw excerpt (facts)
+> or the hypothesis (interpretations), two entries with byte-identical content
+> but different evidence collapse to one backend memory even though their
+> wrapper ids differ — the last write wins. The wrapper ids, evidence tags, and
+> metadata are preserved per write, but resolving this backend-level dedup is
+> deferred to a later story.
 
 ## Architecture
 

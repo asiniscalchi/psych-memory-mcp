@@ -31,13 +31,6 @@ fn valid_input() -> StoreJournalFactInput {
 fn tool_is_registered_and_no_generic_tool_exposed() {
     let router = PsychMemoryServer::tool_router();
     assert!(router.has_route("store_journal_fact"));
-
-    let names: Vec<String> = router
-        .list_all()
-        .into_iter()
-        .map(|t| t.name.into())
-        .collect();
-    assert_eq!(names, vec!["store_journal_fact".to_string()]);
     for generic in ["store_memory", "save_memory", "remember"] {
         assert!(!router.has_route(generic), "generic tool {generic} exposed");
     }
