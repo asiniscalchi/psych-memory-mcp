@@ -13,9 +13,7 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler};
 
 use crate::backend::MemoryBackend;
 use crate::errors::{PsychMemoryError, ValidationError};
-use crate::evidence::{
-    resolve_pattern_seed_by_pattern_id, resolve_supporting_facts, PatternSeedLookup,
-};
+use crate::evidence::{resolve_pattern_seed_by_pattern_id, resolve_supporting_facts};
 use crate::fact_id::generate_fact_id;
 use crate::interpretation_id::generate_interpretation_id;
 use crate::mapping::{
@@ -28,6 +26,7 @@ use crate::model::{
 };
 use crate::pattern_id::generate_pattern_id;
 use crate::pattern_validation::validate_create_pattern_seed;
+use crate::resolution::TypedLookup;
 use crate::validators::{validate_store_interpretation, validate_store_journal_fact};
 
 #[derive(Clone)]
@@ -127,17 +126,17 @@ impl PsychMemoryServer {
         let pattern_id = generate_pattern_id(&validated);
 
         match resolve_pattern_seed_by_pattern_id(self.backend.as_ref(), &pattern_id).await? {
-            PatternSeedLookup::NotFound => {}
-            PatternSeedLookup::Found(existing) => {
+            TypedLookup::NotFound => {}
+            TypedLookup::Found(existing) => {
                 return Ok(CreatePatternSeedOutput::AlreadyExists {
                     pattern_id,
                     backend_memory_id: Some(existing.content_hash),
                 });
             }
-            PatternSeedLookup::Ambiguous(_) => {
+            TypedLookup::Ambiguous(_) => {
                 return Ok(rejected_pattern(&ValidationError::AmbiguousPatternSeed));
             }
-            PatternSeedLookup::InvalidMatch(_) => {
+            TypedLookup::InvalidMatch(_) => {
                 return Ok(rejected_pattern(&ValidationError::InvalidPatternSeedMatch));
             }
         }

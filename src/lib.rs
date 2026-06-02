@@ -14,5 +14,6 @@ pub mod mapping;
 pub mod model;
 pub mod pattern_id;
 pub mod pattern_validation;
+pub mod resolution;
 pub mod server;
 pub mod validators;

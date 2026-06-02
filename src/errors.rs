@@ -81,6 +81,18 @@ pub enum ValidationError {
     AmbiguousPatternSeed,
     #[error("Memories tagged with this pattern_id are not valid pattern seeds.")]
     InvalidPatternSeedMatch,
+
+    // --- Interpretation resolution (Story 4) ---
+    #[error("interpretation_ids must not contain empty values.")]
+    EmptyInterpretationId,
+    #[error("One or more interpretation_ids could not be resolved.")]
+    UnknownInterpretation,
+    #[error("More than one Interpretation matched the same interpretation_id.")]
+    AmbiguousInterpretation,
+    #[error("Resolved interpretation_id did not match a valid Interpretation.")]
+    InvalidInterpretation,
+    #[error("Resolved interpretation metadata.interpretation_id does not match the requested interpretation_id.")]
+    InterpretationIdMismatch,
 }
 
 impl ValidationError {
@@ -120,6 +132,11 @@ impl ValidationError {
             ValidationError::AliasEqualsSlug => "alias_equals_slug",
             ValidationError::AmbiguousPatternSeed => "ambiguous_pattern_seed",
             ValidationError::InvalidPatternSeedMatch => "invalid_pattern_seed_match",
+            ValidationError::EmptyInterpretationId => "empty_interpretation_id",
+            ValidationError::UnknownInterpretation => "unknown_interpretation",
+            ValidationError::AmbiguousInterpretation => "ambiguous_interpretation",
+            ValidationError::InvalidInterpretation => "invalid_interpretation",
+            ValidationError::InterpretationIdMismatch => "interpretation_id_mismatch",
         }
     }
 }
