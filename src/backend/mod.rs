@@ -52,6 +52,13 @@ pub trait MemoryBackend: Send + Sync {
         content_hash: &str,
     ) -> Result<Option<MemoryRecord>, PsychMemoryError>;
 
+    /// Return every memory carrying the exact `tag`.
+    ///
+    /// This is deliberately generic transport: it knows nothing about facts or
+    /// interpretations. Epistemic rules (which memory counts as a valid fact,
+    /// ambiguity, metadata checks) live in the domain layer.
+    async fn find_memories_by_tag(&self, tag: &str) -> Result<Vec<MemoryRecord>, PsychMemoryError>;
+
     /// Liveness/readiness check against the backend.
     async fn health(&self) -> Result<(), PsychMemoryError>;
 }

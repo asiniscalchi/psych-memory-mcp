@@ -69,6 +69,17 @@ impl MemoryBackend for FakeMemoryBackend {
             .cloned())
     }
 
+    async fn find_memories_by_tag(&self, tag: &str) -> Result<Vec<MemoryRecord>, PsychMemoryError> {
+        Ok(self
+            .store
+            .lock()
+            .expect("fake backend mutex poisoned")
+            .values()
+            .filter(|m| m.tags.iter().any(|t| t == tag))
+            .cloned()
+            .collect())
+    }
+
     async fn health(&self) -> Result<(), PsychMemoryError> {
         Ok(())
     }
