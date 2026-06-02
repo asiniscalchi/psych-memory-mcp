@@ -6,6 +6,7 @@
 pub mod backend;
 pub mod config;
 pub mod errors;
+pub mod fact_id;
 pub mod model;
 pub mod server;
 pub mod validators;
