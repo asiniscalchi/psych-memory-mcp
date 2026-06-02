@@ -12,6 +12,7 @@ through a typed, validated tool so its epistemic status is never ambiguous.
 |------|---------|
 | `store_journal_fact` | Store a journal-derived fact anchored to its raw Froid source excerpt. |
 | `store_interpretation` | Store a hypothesis grounded in one or more existing journal facts. |
+| `create_pattern_seed` | Create a named observation category for a recurring dynamic. |
 
 `store_journal_fact` stores the verbatim `source_excerpt` as the memory content
 (not the normalized statement), records every fact as `epistemic_status:
@@ -30,13 +31,25 @@ references are rejected and nothing is stored. The deterministic
 metadata and an `interpretation_id:<id>` tag, with one `supported_by:<fact_id>`
 tag per fact. Only `status: candidate` is accepted in this milestone.
 
-Validation failures from either tool come back as structured tool errors
+`create_pattern_seed` creates a *named observation category* (`epistemic_status:
+observation_category`, `status: seed`) — never a claim that the pattern is
+active or that the user has it (an identity-claim guard rejects "<X> has the
+pattern" / "this pattern is active"). The `pattern_id` is simply `pattern_<slug>`
+(slug-only identity), emitted as `pattern_id:<id>` and `pattern_slug:<slug>`
+tags with `pattern_alias:<alias>` per alias. It is idempotent by `pattern_id`:
+re-creating an existing seed returns `status: already_exists` and stores
+nothing (refined fields are **not** applied — updates are a future story).
+Records carry no `occurrence_count`/`trend`/`intensity` — activation requires
+future occurrence records.
+
+Validation failures from any tool come back as structured tool errors
 (`{ ok: false, error_code, message }`).
 
 > **Known backend collision risk.** The memory-service keys records by
-> `content_hash = sha256(content)`. Because content is the raw excerpt (facts)
-> or the hypothesis (interpretations), two entries with byte-identical content
-> but different evidence collapse to one backend memory even though their
+> `content_hash = sha256(content)`. Because content is the raw excerpt (facts),
+> the hypothesis (interpretations), or `name — description` (pattern seeds), two
+> entries with byte-identical content but different evidence collapse to one
+> backend memory even though their
 > wrapper ids differ — the last write wins. The wrapper ids, evidence tags, and
 > metadata are preserved per write, but resolving this backend-level dedup is
 > deferred to a later story.
@@ -72,11 +85,11 @@ The memory-service identifies records by **`content_hash`** (a SHA-256 of the
 content), which the wrapper uses as the stable memory id. Storing identical
 content is therefore idempotent.
 
-> **Note:** the `fact` and `interpretation` memory types are not in the
-> service's default ontology and are silently downgraded to `observation`
-> unless the service is started with
-> `MCP_CUSTOM_MEMORY_TYPES='{"fact": [], "interpretation": []}'` (set in
-> `docker-compose.yml`).
+> **Note:** the `fact`, `interpretation`, and `pattern_seed` memory types are
+> not in the service's default ontology and are silently downgraded to
+> `observation` unless the service is started with
+> `MCP_CUSTOM_MEMORY_TYPES='{"fact": [], "interpretation": [], "pattern_seed": []}'`
+> (set in `docker-compose.yml`).
 
 ## Configuration
 
