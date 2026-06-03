@@ -119,6 +119,22 @@ pub enum ValidationError {
     InvalidDateRange,
     #[error("phases must not contain duplicates.")]
     DuplicatePhaseFilter,
+
+    // --- Get epistemic record (Story 6) ---
+    #[error("get_epistemic_record requires an id.")]
+    MissingEpistemicId,
+    #[error("Unsupported epistemic id prefix. Expected one of: fact_, interp_, pattern_, occ_.")]
+    UnsupportedEpistemicId,
+    #[error("No epistemic record was found for the requested id.")]
+    UnknownEpistemicRecord,
+    #[error("More than one valid epistemic record matched the requested id.")]
+    AmbiguousEpistemicRecord,
+    #[error("Matching backend records were found, but none were valid epistemic records of the expected type.")]
+    InvalidEpistemicRecord,
+    #[error("Resolved record metadata id does not match the requested id.")]
+    EpistemicIdMismatch,
+    #[error("Resolved record schema_version does not match the expected schema.")]
+    EpistemicSchemaMismatch,
 }
 
 impl ValidationError {
@@ -174,6 +190,13 @@ impl ValidationError {
             ValidationError::InvalidDateTo => "invalid_date_to",
             ValidationError::InvalidDateRange => "invalid_date_range",
             ValidationError::DuplicatePhaseFilter => "duplicate_phase_filter",
+            ValidationError::MissingEpistemicId => "missing_epistemic_id",
+            ValidationError::UnsupportedEpistemicId => "unsupported_epistemic_id",
+            ValidationError::UnknownEpistemicRecord => "unknown_epistemic_record",
+            ValidationError::AmbiguousEpistemicRecord => "ambiguous_epistemic_record",
+            ValidationError::InvalidEpistemicRecord => "invalid_epistemic_record",
+            ValidationError::EpistemicIdMismatch => "epistemic_id_mismatch",
+            ValidationError::EpistemicSchemaMismatch => "epistemic_schema_mismatch",
         }
     }
 }

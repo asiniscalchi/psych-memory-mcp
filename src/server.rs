@@ -12,6 +12,7 @@ use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, S
 use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler};
 
 use crate::backend::MemoryBackend;
+use crate::epistemic_lookup::get_epistemic_record;
 use crate::errors::{PsychMemoryError, ValidationError};
 use crate::evidence::{
     resolve_linked_interpretations, resolve_pattern_seed_by_pattern_id, resolve_supporting_facts,
@@ -23,10 +24,10 @@ use crate::mapping::{
     map_store_interpretation_to_backend_request, map_store_journal_fact_to_backend_request,
 };
 use crate::model::{
-    CreatePatternSeedInput, CreatePatternSeedOutput, QueryPatternTimelineInput,
-    QueryPatternTimelineOutput, RecordPatternOccurrenceInput, RecordPatternOccurrenceOutput,
-    StoreInterpretationInput, StoreInterpretationOutput, StoreJournalFactInput,
-    StoreJournalFactOutput,
+    CreatePatternSeedInput, CreatePatternSeedOutput, GetEpistemicRecordInput,
+    GetEpistemicRecordOutput, QueryPatternTimelineInput, QueryPatternTimelineOutput,
+    RecordPatternOccurrenceInput, RecordPatternOccurrenceOutput, StoreInterpretationInput,
+    StoreInterpretationOutput, StoreJournalFactInput, StoreJournalFactOutput,
 };
 use crate::occurrence_id::generate_occurrence_id;
 use crate::pattern_id::generate_pattern_id;
@@ -240,6 +241,15 @@ impl PsychMemoryServer {
 
         Ok(build_pattern_timeline(records, &query))
     }
+
+    /// The `get_epistemic_record` flow, independent of the MCP envelope.
+    /// Read-only typed read-through by epistemic id.
+    pub async fn get_epistemic_record_flow(
+        &self,
+        input: GetEpistemicRecordInput,
+    ) -> Result<GetEpistemicRecordOutput, PsychMemoryError> {
+        get_epistemic_record(self.backend.as_ref(), &input.id).await
+    }
 }
 
 /// Turn a list-resolver result into either a structured rejection (domain
@@ -401,6 +411,29 @@ impl PsychMemoryServer {
         match outcome {
             QueryPatternTimelineOutput::Found { .. } => Ok(CallToolResult::success(vec![content])),
             QueryPatternTimelineOutput::Rejected { .. } => Ok(CallToolResult::error(vec![content])),
+        }
+    }
+
+    #[tool(
+        description = "Retrieve a single epistemic record by its stable id (prefix routes the \
+                       type: fact_ -> journal fact, interp_ -> interpretation, pattern_ -> \
+                       pattern seed, occ_ -> pattern occurrence). Read-only and typed: validates \
+                       the stored record against its schema and returns it. Use this to follow ids \
+                       from a timeline. It does not interpret, conclude, or assess activation."
+    )]
+    async fn get_epistemic_record(
+        &self,
+        Parameters(input): Parameters<GetEpistemicRecordInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let outcome = self
+            .get_epistemic_record_flow(input)
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("backend query failed: {e}"), None))?;
+
+        let content = Content::json(&outcome)?;
+        match outcome {
+            GetEpistemicRecordOutput::Found { .. } => Ok(CallToolResult::success(vec![content])),
+            GetEpistemicRecordOutput::Rejected { .. } => Ok(CallToolResult::error(vec![content])),
         }
     }
 }

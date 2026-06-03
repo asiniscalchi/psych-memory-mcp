@@ -5,6 +5,7 @@
 
 pub mod backend;
 pub mod config;
+pub mod epistemic_lookup;
 pub mod errors;
 pub mod evidence;
 pub mod fact_id;

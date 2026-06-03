@@ -15,6 +15,7 @@ through a typed, validated tool so its epistemic status is never ambiguous.
 | `create_pattern_seed` | Create a named observation category for a recurring dynamic. |
 | `record_pattern_occurrence` | Record a dated occurrence of a pattern seed in one episode. |
 | `query_pattern_timeline` | Read-only: list a pattern's occurrences over time, grouped by date. |
+| `get_epistemic_record` | Read-only: fetch one typed record by its epistemic id. |
 
 `store_journal_fact` stores the verbatim `source_excerpt` as the memory content
 (not the normalized statement), records every fact as `epistemic_status:
@@ -61,6 +62,16 @@ filter-then-count resolver: a single valid record stays usable even amid
 corrupt/tag-colliding ones. This unifies — and intentionally changes — the
 earlier fact-lookup corner case (one valid fact + one corrupt match: previously
 `ambiguous_supporting_fact`, now resolves to the valid fact).
+
+`get_epistemic_record` is a read-only typed read-through: the id prefix routes
+the type (`fact_`→journal fact, `interp_`→interpretation, `pattern_`→pattern
+seed, `occ_`→pattern occurrence) and lookup tag, the matching backend record's
+metadata is **deserialized** into a typed struct and cross-checked (id, schema,
+epistemic_status, numeric ranges), and the validated record is returned. Unknown
+/ ambiguous / invalid ids are rejected; when only corrupt matches exist the most
+specific error wins (`epistemic_id_mismatch` > `epistemic_schema_mismatch` >
+`invalid_epistemic_record`). It never writes and adds no interpretation. This is
+the read-side counterpart for following ids out of a timeline.
 
 `query_pattern_timeline` is the first **read-only** tool: given a `pattern_id`
 it does a single (fully paginated) `pattern_id:<id>` lookup, resolves the seed
